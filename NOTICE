@@ -1,2 +1,5 @@
 pdfiumtoppm
 Copyright 2026 Tim Allison
+
+tests/tika-*.pdf are test documents from Apache Tika (https://tika.apache.org),
+Copyright The Apache Software Foundation, licensed under the Apache License 2.0.

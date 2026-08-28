@@ -64,6 +64,19 @@ done
 "$B" -pdfium /nonexistent -f 1 -l 1 "$T/twelve.pdf" "$W/x" 2>/dev/null && rc=0 || rc=$?
 [ "$rc" = 99 ] || fail "explicit bad -pdfium should not fall back (got $rc)"
 
+# real content: rendered page must not be blank (bytes other than 0xff beyond the header)
+"$B" -r 72 "$T/tika-testPDF.pdf" "$W/txt"
+[ "$(tr -d '\377' < "$W/txt-1.ppm" | wc -c)" -gt 1000 ] || fail "text page rendered blank"
+
+P="$T/tika-testPassword4Spaces.pdf"   # password is four spaces
+"$B" -r 72 "$P" "$W/enc" 2>/dev/null && fail "encrypted without password should fail"
+[ $? = 1 ] || fail "encrypted without password exit code"
+"$B" -r 72 -upw wrong "$P" "$W/enc" 2>/dev/null && fail "wrong password should fail"
+"$B" -r 72 -upw "    " "$P" "$W/enc-u" || fail "-upw"
+"$B" -r 72 -opw "    " "$P" "$W/enc-o" || fail "-opw"
+"$B" -r 72 -upw wrong -opw "    " "$P" "$W/enc-uo" || fail "either password should open"
+cmp -s "$W/enc-u-1.ppm" "$W/enc-o-1.ppm" || fail "same render regardless of which password"
+
 "$B" -r 72 "$T/nope.pdf" "$W/x" 2>/dev/null && fail "missing file should fail"
 [ $? = 1 ] || fail "missing file exit code"
 "$B" -aa no "$T/twelve.pdf" "$W/x" 2>/dev/null && fail "unknown flag should fail"

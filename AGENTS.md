@@ -25,7 +25,9 @@ Skills live in `.skills/dev/<name>/SKILL.md`; read the one matching the task.
   && cargo build --release && PDFIUM_PATH=<dir>/lib tests/smoke.sh`.
   `smoke.sh` needs a `libpdfium.so`; fetch as in README "libpdfium".
 - Test PDFs from external corpora (Digital Corpora etc.) never enter the repo.
-  Fixtures under `tests/` are hand-made; keep them tiny.
+  Fixtures under `tests/` are hand-made or copied from Apache Tika's
+  `test-documents` (ALv2; name them `tika-*.pdf` and keep NOTICE accurate).
+  Keep them tiny.
 - `pdftoppm` is the behavioral reference. A deviation is either matched,
   rejected with a usage error, or documented in README "Not supported".
 - New flags: README options block, `USAGE` in `src/main.rs`, a smoke case,
