@@ -1,0 +1,60 @@
+# Copyright 2026 Tim Allison
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: release
+on:
+  push:
+    tags: ['v*']
+env:
+  PDFIUM_RELEASE: chromium/8021
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            pdfium: linux-x64
+            sha256: 685f7930cd184ea22cd77afe707c1cf53b173d18118b6e16cb213c9277d7cdc3
+          - os: ubuntu-24.04-arm
+            pdfium: linux-arm64
+            sha256: 8da7615b210986a5b7187e3246ef0c315995583c68af6765b070d5dbb156ede6
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - run: cargo build --release
+      - name: fetch pdfium
+        run: |
+          curl -sfL "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE}/pdfium-${{ matrix.pdfium }}.tgz" -o pdfium.tgz
+          echo "${{ matrix.sha256 }}  pdfium.tgz" | sha256sum -c
+          mkdir -p pdfium && tar xzf pdfium.tgz -C pdfium
+      - run: PDFIUM_PATH=pdfium/lib tests/smoke.sh
+      - name: package
+        run: |
+          D=pdfiumtoppm-${GITHUB_REF_NAME}-${{ matrix.pdfium }}
+          mkdir "$D"
+          cp target/release/pdfiumtoppm pdfium/lib/libpdfium.so LICENSE NOTICE README.md CHANGES.md "$D/"
+          mkdir "$D/licenses"
+          cp pdfium/LICENSE "$D/licenses/pdfium-binaries.txt"
+          cp pdfium/licenses/* "$D/licenses/"
+          cp pdfium/VERSION "$D/licenses/pdfium-VERSION"
+          tar czf "$D.tar.gz" "$D"
+          sha256sum "$D.tar.gz" > "$D.tar.gz.sha256"
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          files: |
+            pdfiumtoppm-*.tar.gz
+            pdfiumtoppm-*.tar.gz.sha256

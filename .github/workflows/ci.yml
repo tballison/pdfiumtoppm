@@ -1,0 +1,44 @@
+# Copyright 2026 Tim Allison
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: ci
+on: [push, pull_request]
+env:
+  PDFIUM_RELEASE: chromium/8021
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            pdfium: linux-x64
+            sha256: 685f7930cd184ea22cd77afe707c1cf53b173d18118b6e16cb213c9277d7cdc3
+          - os: ubuntu-24.04-arm
+            pdfium: linux-arm64
+            sha256: 8da7615b210986a5b7187e3246ef0c315995583c68af6765b070d5dbb156ede6
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --release -- -D warnings
+      - run: cargo build --release
+      - name: fetch pdfium
+        run: |
+          curl -sfL "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE}/pdfium-${{ matrix.pdfium }}.tgz" -o pdfium.tgz
+          echo "${{ matrix.sha256 }}  pdfium.tgz" | sha256sum -c
+          mkdir -p pdfium && tar xzf pdfium.tgz -C pdfium
+      - run: PDFIUM_PATH=pdfium/lib tests/smoke.sh
