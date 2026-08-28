@@ -28,9 +28,9 @@ description: Move to a new pdfium-binaries release (and, if needed, pdfium-rende
 3. Update, all together:
    - `.github/workflows/ci.yml` and `release.yml`: `PDFIUM_RELEASE` and both
      matrix `sha256` values.
-   - `README.md` "libpdfium": the tested/pinned version.
+   - `README.md` "libpdfium": the pinned version and the curl URL.
    - `CHANGES.md`: new pdfium version (and `VERSION` file's MAJOR.MINOR.BUILD).
    - `Cargo.toml` pins if pdfium-render or image change; run `cargo update -p`.
 4. Extract the x64 tarball locally and run `PDFIUM_PATH=<dir>/lib tests/smoke.sh`.
-5. Run `tests/compare.py` against a corpus sample if rendering behaviour may
+5. Run `tests/compare.py` against a corpus sample if rendering behavior may
    have changed; update `docs/pdftoppm-comparison.md` only if numbers moved.

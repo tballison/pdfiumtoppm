@@ -26,7 +26,7 @@ Skills live in `.skills/dev/<name>/SKILL.md`; read the one matching the task.
   `smoke.sh` needs a `libpdfium.so`; fetch as in README "libpdfium".
 - Test PDFs from external corpora (Digital Corpora etc.) never enter the repo.
   Fixtures under `tests/` are hand-made; keep them tiny.
-- `pdftoppm` is the behavioural reference. A deviation is either matched,
+- `pdftoppm` is the behavioral reference. A deviation is either matched,
   rejected with a usage error, or documented in README "Not supported".
 - New flags: README options block, `USAGE` in `src/main.rs`, a smoke case,
   a CHANGES.md line.

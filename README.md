@@ -16,14 +16,21 @@ limitations under the License.
 
 # pdfiumtoppm
 
-A page renderer on [PDFium](https://pdfium.googlesource.com/pdfium/) via
-[pdfium-render](https://crates.io/crates/pdfium-render) that speaks the
-command line of Poppler's `pdftoppm`, so it can stand in where a caller only
-needs page images. It is a small subset: unsupported flags are rejected, not
-ignored. `pdftoppm` remains the reference for behaviour here.
+A PDF page renderer using [PDFium](https://pdfium.googlesource.com/pdfium/)
+via [pdfium-render](https://crates.io/crates/pdfium-render) that speaks a
+subset of Poppler's `pdftoppm` command line. Unsupported flags are rejected,
+not ignored; `pdftoppm` remains the reference for behavior here. It does not
+promise to track Poppler's development, and it adds a few flags `pdftoppm`
+lacks (`-max-pages`, `-max-pixels`, `-png-compress`).
 
-Independent project; not affiliated with Google, PDFium, pdfium-binaries, or
-pdfium-render.
+Independent project; not affiliated with Google, PDFium, pdfium-binaries, or pdfium-render.
+
+## Status
+
+Early (0.1.0). Written in a morning, largely by an AI agent under human
+direction and review, then checked against 100 Common Crawl PDFs (see
+[docs/pdftoppm-comparison.md](docs/pdftoppm-comparison.md)). Expect rough
+edges; bug reports with a sample PDF are welcome.
 
 ## Options
 
@@ -77,7 +84,7 @@ then `$PDFIUM_PATH`, the executable's directory, the system library path. On
 failure the error lists every location tried.
 
 ```sh
-mkdir -p pdfium && curl -sL https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-x64.tgz | tar xz -C pdfium
+mkdir -p pdfium && curl -sL https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8021/pdfium-linux-x64.tgz | tar xz -C pdfium
 PDFIUM_PATH=pdfium/lib pdfiumtoppm -png -r 300 -scale-to 4096 -gray in.pdf out
 ```
 
@@ -112,7 +119,7 @@ from Rust, and Benoit Blanchon's
 [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) makes it
 installable. The [`image`](https://github.com/image-rs/image) crate does the
 encoding. And [Poppler](https://poppler.freedesktop.org/)'s `pdftoppm` set the
-interface and behaviour this tool imitates; it has served as the workhorse of
+interface and behavior this tool imitates; it has served as the workhorse of
 countless pipelines for two decades and is the yardstick used throughout this
 README. Thank you to all of them.
 
