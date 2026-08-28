@@ -25,6 +25,9 @@ repository = "https://github.com/tballison/pdfiumtoppm"
 pdfium-render = "=0.9.3"
 image = { version = "=0.25.10", default-features = false, features = ["png", "pnm"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.189"
+
 [profile.release]
 lto = true
 codegen-units = 1

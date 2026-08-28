@@ -19,8 +19,9 @@ limitations under the License.
 ## 0.1.0 (unreleased)
 
 - Initial release: `pdftoppm`-compatible subset (`-f -l -r -scale-to -png
-  -gray -opw -upw`), plus `-max-pages`, `-max-pixels`, `-png-compress`,
+  -gray -opw -upw`), plus `-max-pages`, `-max-pixels`, `-max-memory`, `-png-compress`,
   `-pdfium`.
+- Exit code 4 when `-max-memory` is hit.
 - Linux x64 and arm64 release tarballs.
 - pdfium-binaries `chromium/8021` (PDFium 154.0.8021.0), pdfium-render 0.9.3,
   image 0.25.10.

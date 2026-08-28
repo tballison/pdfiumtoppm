@@ -44,6 +44,11 @@ done
 "$B" -r 300 -max-pixels 4000000 "$T/huge.pdf" "$W/h" 2>/dev/null
 [ "$(head -c 20 "$W/h-1.ppm" | sed -n 2p)" = "2000 2000 255" ] || fail "max-pixels"
 
+"$B" -r 72 -max-memory 64 -f 1 -l 1 "$T/twelve.pdf" "$W/mem" || fail "64 MiB should suffice for a small page"
+"$B" -r 300 -max-memory 256 "$T/huge.pdf" "$W/memh" 2>"$W/memh.err" && rc=0 || rc=$?
+[ "$rc" = 4 ] && [ ! -f "$W/memh-1.ppm" ] && grep -q "over -max-memory" "$W/memh.err" || fail "over -max-memory should skip the page and exit 4 (rc $rc)"
+"$B" -r 300 -max-memory 256 -max-pixels 4000000 "$T/huge.pdf" "$W/memp" 2>/dev/null || fail "-max-pixels should keep huge page under -max-memory"
+
 "$B" -r 72 "$T/degenerate.pdf" "$W/d" 2>/dev/null && rc=0 || rc=$?
 [ "$rc" = 0 ] || fail "bad page should not fail the run (exit $rc)"
 [ -f "$W/d-1.ppm" ] && [ ! -f "$W/d-2.ppm" ] && [ -f "$W/d-3.ppm" ] || fail "expected pages 1 and 3 only"

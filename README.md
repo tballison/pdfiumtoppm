@@ -21,7 +21,7 @@ via [pdfium-render](https://crates.io/crates/pdfium-render) that speaks a
 subset of Poppler's `pdftoppm` command line. Unsupported flags are rejected,
 not ignored; `pdftoppm` remains the reference for behavior here. It does not
 promise to track Poppler's development, and it adds a few flags `pdftoppm`
-lacks (`-max-pages`, `-max-pixels`, `-png-compress`).
+lacks (`-max-pages`, `-max-pixels`, `-max-memory`, `-png-compress`).
 
 Independent project; not affiliated with Google, PDFium, pdfium-binaries, or pdfium-render.
 
@@ -42,6 +42,7 @@ pdfiumtoppm [options] <PDF-file> <image-root>
   -scale-to <int>     scale the long edge to this many pixels
   -max-pages <int>    render at most this many pages (after -f/-l)
   -max-pixels <int>   downscale any page whose width*height exceeds this
+  -max-memory <int>   address-space limit in MiB; exit 4 if any page hits it
   -png                write PNG (default binary PPM/PGM)
   -png-compress <int> PNG zlib level 0-9 (default 1; pdftoppm uses 6)
   -gray               grayscale
@@ -52,10 +53,17 @@ pdfiumtoppm [options] <PDF-file> <image-root>
 
 Output: `<image-root>-<N>.<ext>`, `N` zero-padded to the page-count width.
 Exit codes as `pdftoppm`: 0 ok, 1 could not open PDF, 2 could not write, 99
-other (including an empty page range).
+other (including an empty page range); plus 4, ours, when `-max-memory` was
+hit.
 
-`-max-pages`/`-max-pixels` are additions for untrusted input. `-scale-to`
-matches `pdftoppm`, including enlarging; `-max-pixels` only ever downscales.
+`-max-pages`, `-max-pixels`, and `-max-memory` are additions for untrusted
+input. `-scale-to` matches `pdftoppm`, including enlarging; `-max-pixels`
+only ever downscales. `-max-memory` (Unix only) sets `RLIMIT_AS` before `libpdfium` is
+loaded. A page that would not fit is skipped with a message and the run
+exits 4 after the remaining pages; if PDFium itself runs out of memory
+mid-page the process still exits 4, but any output file being written at
+that moment may be truncated. Budget about 8 bytes per output pixel on top
+of a ~64 MiB baseline (a 4096x4096 render needs ~130 MiB more).
 
 A page that fails to render is reported and skipped; exit stays 0 unless no
 page rendered (99).

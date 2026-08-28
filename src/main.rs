@@ -29,6 +29,7 @@ use pdfium_render::prelude::*;
 // exit codes mirror pdftoppm
 const EXIT_OPEN_PDF: i32 = 1;
 const EXIT_OPEN_OUTPUT: i32 = 2;
+const EXIT_MEMORY: i32 = 4; // ours: -max-memory was hit
 const EXIT_OTHER: i32 = 99;
 
 const USAGE: &str = "\
@@ -39,6 +40,7 @@ Usage: pdfiumtoppm [options] <PDF-file> <image-root>
   -scale-to <int>    : scales each page to fit within scale-to*scale-to pixel box
   -max-pages <int>   : render at most this many pages
   -max-pixels <int>  : downscale any page whose width*height would exceed this
+  -max-memory <int>  : address-space limit in MiB (setrlimit RLIMIT_AS); exit 4 if hit
   -png               : generate a PNG file (default is PPM)
   -png-compress <int>: PNG zlib level 0-9 (default 1; pdftoppm uses 6)
   -gray              : generate a grayscale image file
@@ -59,6 +61,7 @@ struct Opts {
     scale_to: Option<u32>,
     max_pages: Option<u32>,
     max_pixels: Option<u64>,
+    max_memory: Option<u64>,
     png: bool,
     png_compress: u8,
     gray: bool,
@@ -82,6 +85,7 @@ fn parse_args() -> Opts {
     let mut scale_to = None;
     let mut max_pages = None;
     let mut max_pixels = None;
+    let mut max_memory = None;
     let mut png = false;
     let mut png_compress: u8 = 1;
     let mut gray = false;
@@ -108,6 +112,9 @@ fn parse_args() -> Opts {
             "-max-pages" => max_pages = Some(num(&value(&mut args, "-max-pages"), "-max-pages")),
             "-max-pixels" => {
                 max_pixels = Some(num(&value(&mut args, "-max-pixels"), "-max-pixels"))
+            }
+            "-max-memory" => {
+                max_memory = Some(num(&value(&mut args, "-max-memory"), "-max-memory"))
             }
             "-png" => png = true,
             "-png-compress" => {
@@ -142,6 +149,7 @@ fn parse_args() -> Opts {
         ("-scale-to", scale_to == Some(0)),
         ("-max-pages", max_pages == Some(0)),
         ("-max-pixels", max_pixels == Some(0)),
+        ("-max-memory", max_memory == Some(0)),
     ] {
         if zero {
             usage_err(&format!("{flag} must be positive"));
@@ -156,6 +164,7 @@ fn parse_args() -> Opts {
         scale_to,
         max_pages,
         max_pixels,
+        max_memory,
         png,
         png_compress,
         gray,
@@ -208,8 +217,59 @@ fn bind_pdfium(explicit: Option<&Path>) -> Pdfium {
     }
 }
 
+#[cfg(not(unix))]
+fn limit_memory(_mib: u64) {
+    usage_err("-max-memory is only supported on Unix");
+}
+
+#[cfg(unix)]
+extern "C" fn on_fatal_signal(sig: libc::c_int) {
+    // allocation failure inside pdfium or Rust ends in abort/trap; report it as exit 4
+    const MSG: &[u8] =
+        b"Error: killed by a fatal signal with -max-memory set; probably out of memory\n";
+    // SAFETY: write and _exit are async-signal-safe
+    unsafe {
+        libc::write(2, MSG.as_ptr().cast(), MSG.len());
+        libc::_exit(if sig == 0 { EXIT_OTHER } else { EXIT_MEMORY });
+    }
+}
+
+#[cfg(unix)]
+fn limit_memory(mib: u64) {
+    let bytes = mib.saturating_mul(1 << 20) as libc::rlim_t;
+    let lim = libc::rlimit {
+        rlim_cur: bytes,
+        rlim_max: bytes,
+    };
+    // SAFETY: plain syscalls on valid arguments
+    unsafe {
+        if libc::setrlimit(libc::RLIMIT_AS, &lim) != 0 {
+            eprintln!(
+                "Error: -max-memory {mib}: {}",
+                std::io::Error::last_os_error()
+            );
+            exit(EXIT_OTHER);
+        }
+        for sig in [
+            libc::SIGABRT,
+            libc::SIGTRAP,
+            libc::SIGILL,
+            libc::SIGSEGV,
+            libc::SIGBUS,
+        ] {
+            libc::signal(
+                sig,
+                on_fatal_signal as extern "C" fn(libc::c_int) as libc::sighandler_t,
+            );
+        }
+    }
+}
+
 fn main() {
     let opts = parse_args();
+    if let Some(m) = opts.max_memory {
+        limit_memory(m); // before libpdfium is loaded, so its allocations count
+    }
     let pdfium = bind_pdfium(opts.pdfium_dir.as_deref());
 
     // pdfium takes one password; pdftoppm accepts either, so try both
@@ -263,7 +323,7 @@ fn main() {
     };
 
     // like pdftoppm: skip bad pages; nonzero exit only if nothing rendered
-    let (mut failed, mut ok) = (0u32, 0u32);
+    let (mut failed, mut ok, mut oom) = (0u32, 0u32, 0u32);
     for pg in first..=last {
         let out = format!("{}-{:0pad$}.{ext}", opts.root, pg);
         match render_page(&doc, pg, &opts) {
@@ -274,11 +334,22 @@ fn main() {
                 }
                 ok += 1;
             }
-            Err(e) => {
+            Err(PageError::Memory(need)) => {
+                eprintln!(
+                    "Error: page {pg}: needs about {} MiB, over -max-memory",
+                    need >> 20
+                );
+                oom += 1;
+            }
+            Err(PageError::Other(e)) => {
                 eprintln!("Error: page {pg}: {e}");
                 failed += 1;
             }
         }
+    }
+    if oom > 0 {
+        eprintln!("Error: {oom} page(s) skipped for -max-memory");
+        exit(EXIT_MEMORY);
     }
     if failed > 0 {
         eprintln!("Error: {failed} page(s) failed to render");
@@ -288,14 +359,33 @@ fn main() {
     }
 }
 
-fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<DynamicImage, String> {
+enum PageError {
+    Memory(usize),
+    Other(String),
+}
+
+impl From<String> for PageError {
+    fn from(s: String) -> Self {
+        PageError::Other(s)
+    }
+}
+
+// reserve without touching, so RLIMIT_AS is checked before pdfium allocates
+fn probe(bytes: usize) -> Result<Vec<u8>, PageError> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(bytes)
+        .map_err(|_| PageError::Memory(bytes))?;
+    Ok(v)
+}
+
+fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<DynamicImage, PageError> {
     let page = doc
         .pages()
         .get((pg - 1) as PdfPageIndex)
         .map_err(|e| format!("could not load: {e:?}"))?;
     let (w, h) = (page.width().value, page.height().value);
     if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
-        return Err(format!("degenerate page size {w}x{h} pt"));
+        return Err(format!("degenerate page size {w}x{h} pt").into());
     }
     let mut scale = match opts.scale_to {
         Some(s) => s as f32 / w.max(h),
@@ -317,21 +407,42 @@ fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<DynamicImage, 
         (w_px, h_px) = ((w * scale) as i32, (h * scale) as i32);
     }
     if w_px < 1 || h_px < 1 {
-        return Err(format!("image size {w_px}x{h_px} too small"));
+        return Err(format!("image size {w_px}x{h_px} too small").into());
     }
     let config = PdfRenderConfig::new()
         .set_fixed_size(w_px, h_px)
         .render_form_data(true)
         .render_annotations(true)
         .use_grayscale_rendering(opts.gray);
-    let img = page
-        .render_with_config(&config)
-        .and_then(|b| b.as_image())
-        .map_err(|e| format!("could not render: {e:?}"))?;
+    let n = w_px as usize * h_px as usize;
+    let bpp = if opts.gray { 1 } else { 3 };
+    // peak is pdfium's BGRA bitmap plus its raw copy, or that copy plus our output
+    if opts.max_memory.is_some() {
+        drop(probe(n * 8)?);
+    }
+    let bgra = {
+        let bitmap = page
+            .render_with_config(&config)
+            .map_err(|e| format!("could not render: {e:?}"))?;
+        if bitmap.format().ok() != Some(PdfBitmapFormat::BGRA) {
+            return Err("unexpected bitmap format".to_string().into());
+        }
+        bitmap.as_raw_bytes()
+    };
+    let mut out = probe(n * bpp)?;
+    for &[b, g, r, _] in bgra.as_chunks::<4>().0 {
+        let (b, g, r) = (b as u32, g as u32, r as u32);
+        if opts.gray {
+            out.push(((r * 299 + g * 587 + b * 114) / 1000) as u8);
+        } else {
+            out.extend_from_slice(&[r as u8, g as u8, b as u8]);
+        }
+    }
+    let (wu, hu) = (w_px as u32, h_px as u32);
     Ok(if opts.gray {
-        DynamicImage::ImageLuma8(img.into_luma8())
+        DynamicImage::ImageLuma8(image::GrayImage::from_raw(wu, hu, out).unwrap())
     } else {
-        DynamicImage::ImageRgb8(img.into_rgb8())
+        DynamicImage::ImageRgb8(image::RgbImage::from_raw(wu, hu, out).unwrap())
     })
 }
 
