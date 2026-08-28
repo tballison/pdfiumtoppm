@@ -117,6 +117,22 @@ differences and timings; results and caveats are in
 ~2x faster with a shorter tail; PNG timing differences are mostly encoder
 settings (`-png-compress`). For tesseract, write PPM.
 
+## Related tools
+
+Other ways to render with PDFium, each with its own strengths:
+
+- [pdfium-cli](https://github.com/klippa-app/pdfium-cli) (Go, MIT): a
+  broader PDF toolkit that renders to PNG/JPG and can run PDFium as
+  WebAssembly, which gives real isolation for untrusted input.
+- [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) (Python): mature
+  bindings with a `render` command and parallel page rendering.
+- `pdfium_test`, PDFium's own test harness, writes PPM/PNG from the source tree.
+- [Poppler](https://poppler.freedesktop.org/)'s `pdftoppm`: the original, with
+  far more options than this tool supports.
+
+This tool's only distinction is speaking `pdftoppm`'s command line with
+`-max-*` limits, as one small binary.
+
 ## Credits
 
 This is a thin shell; the real work belongs to others.
