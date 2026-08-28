@@ -19,7 +19,7 @@ limitations under the License.
 A PDF page renderer using [PDFium](https://pdfium.googlesource.com/pdfium/)
 via [pdfium-render](https://crates.io/crates/pdfium-render) that speaks a
 subset of Poppler's `pdftoppm` command line. Unsupported flags are rejected,
-not ignored; `pdftoppm` remains the reference for behavior here. It does not
+not ignored; `pdftoppm` remains the reference for behavior here. This project does not
 promise to track Poppler's development, and it adds a few flags `pdftoppm`
 lacks (`-max-pages`, `-max-pixels`, `-max-memory`, `-png-compress`).
 
