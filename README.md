@@ -49,6 +49,8 @@ pdfiumtoppm [options] <PDF-file> <image-root>
   -opw <string>       owner password
   -upw <string>       user password
   -pdfium <path>      directory containing libpdfium.so
+  -v                  print version
+  -h                  print usage
 ```
 
 Output: `<image-root>-<N>.<ext>`, `N` zero-padded to the page-count width.
@@ -60,9 +62,13 @@ hit.
 input. `-scale-to` matches `pdftoppm`, including enlarging; `-max-pixels`
 only ever downscales. `-max-memory` (Unix only) sets `RLIMIT_AS` before `libpdfium` is
 loaded. A page that would not fit is skipped with a message and the run
-exits 4 after the remaining pages; if PDFium itself runs out of memory
-mid-page the process still exits 4, but any output file being written at
-that moment may be truncated. Budget about 8 bytes per output pixel on top
+exits 4 after the remaining pages. If the process instead dies mid-page from
+a fatal signal (an allocation failure inside PDFium ends that way), the exit
+code is a guess: 4 when the address space was within a third of the limit,
+99 when it was well under, since a crash that far from the limit is more
+likely a PDFium bug than memory. Either way the message names the signal,
+and any output file being written at that moment may be truncated. Without
+`-max-memory` no signal is caught; a crash is a crash. Budget about 8 bytes per output pixel on top
 of a ~64 MiB baseline (a 4096x4096 render needs ~130 MiB more).
 
 A page that fails to render is reported and skipped; exit stays 0 unless no
@@ -104,7 +110,8 @@ Tested and pinned (CI, release tarball) to
 
 ```sh
 cargo build --release                  # target/release/pdfiumtoppm
-PDFIUM_PATH=pdfium/lib tests/smoke.sh
+cargo test --release                   # sizing and page-range logic; no libpdfium needed
+PDFIUM_PATH=pdfium/lib tests/smoke.sh  # end to end
 ```
 
 Tags `v*` publish `pdfiumtoppm-<tag>-linux-{x64,arm64}.tar.gz`.

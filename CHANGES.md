@@ -21,7 +21,9 @@ limitations under the License.
 - Initial release: `pdftoppm`-compatible subset (`-f -l -r -scale-to -png
   -gray -opw -upw`), plus `-max-pages`, `-max-pixels`, `-max-memory`, `-png-compress`,
   `-pdfium`.
-- Exit code 4 when `-max-memory` is hit.
+- Exit code 4 when `-max-memory` is hit. A fatal signal under `-max-memory`
+  exits 4 if the address space was near the limit, else 99 (probably a
+  PDFium bug); the message names the signal.
 - Linux x64 and arm64 release tarballs.
 - pdfium-binaries `chromium/8021` (PDFium 154.0.8021.0), pdfium-render 0.9.3,
   image 0.25.10.

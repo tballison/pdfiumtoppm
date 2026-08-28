@@ -34,7 +34,8 @@ jobs:
         with:
           components: clippy, rustfmt
       - run: cargo fmt --check
-      - run: cargo clippy --release -- -D warnings
+      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo test --release
       - run: cargo build --release
       - name: fetch pdfium
         run: |

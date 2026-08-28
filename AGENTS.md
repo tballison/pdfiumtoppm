@@ -21,8 +21,9 @@ Skills live in `.skills/dev/<name>/SKILL.md`; read the one matching the task.
 ## Ground rules
 
 - Never `git commit`, push, tag, or write to GitHub; stage and hand back.
-- Before finishing: `cargo fmt --check && cargo clippy --release -- -D warnings
-  && cargo build --release && PDFIUM_PATH=<dir>/lib tests/smoke.sh`.
+- Before finishing: `cargo fmt --check && cargo clippy --release --all-targets
+  -- -D warnings && cargo test --release && cargo build --release &&
+  PDFIUM_PATH=<dir>/lib tests/smoke.sh`.
   `smoke.sh` needs a `libpdfium.so`; fetch as in README "libpdfium".
 - Test PDFs from external corpora (Digital Corpora etc.) never enter the repo.
   Fixtures under `tests/` are hand-made or copied from Apache Tika's
@@ -31,7 +32,8 @@ Skills live in `.skills/dev/<name>/SKILL.md`; read the one matching the task.
 - `pdftoppm` is the behavioral reference. A deviation is either matched,
   rejected with a usage error, or documented in README "Not supported".
 - New flags: README options block, `USAGE` in `src/main.rs`, a smoke case,
-  a CHANGES.md line.
+  a CHANGES.md line. Pure logic (sizing, page range) gets a unit test in
+  `src/main.rs`; only what needs `libpdfium` goes in `smoke.sh`.
 - Comments: one terse line, only for a non-obvious WHY.
 - Be generous to upstream projects (PDFium, pdfium-render, pdfium-binaries,
   Poppler) in docs; never disparage.

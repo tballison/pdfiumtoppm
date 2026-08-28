@@ -17,6 +17,8 @@
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::exit;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -41,6 +43,7 @@ Usage: pdfiumtoppm [options] <PDF-file> <image-root>
   -max-pages <int>   : render at most this many pages
   -max-pixels <int>  : downscale any page whose width*height would exceed this
   -max-memory <int>  : address-space limit in MiB (setrlimit RLIMIT_AS); exit 4 if hit
+                       (a crash far below the limit exits 99 instead)
   -png               : generate a PNG file (default is PPM)
   -png-compress <int>: PNG zlib level 0-9 (default 1; pdftoppm uses 6)
   -gray              : generate a grayscale image file
@@ -223,26 +226,82 @@ fn limit_memory(_mib: u64) {
 }
 
 #[cfg(unix)]
+static MEM_LIMIT: AtomicU64 = AtomicU64::new(0);
+#[cfg(unix)]
+static PAGE_SIZE: AtomicU64 = AtomicU64::new(0);
+
+// VmSize from /proc/self/statm; only async-signal-safe calls, no allocation
+#[cfg(unix)]
+unsafe fn vm_size() -> Option<u64> {
+    let fd = libc::open(c"/proc/self/statm".as_ptr(), libc::O_RDONLY);
+    if fd < 0 {
+        return None;
+    }
+    let mut buf = [0u8; 32];
+    let n = libc::read(fd, buf.as_mut_ptr().cast(), buf.len());
+    libc::close(fd);
+    let mut pages = 0u64;
+    let digits = buf
+        .iter()
+        .take(n.max(0) as usize)
+        .take_while(|b| b.is_ascii_digit());
+    let mut any = false;
+    for b in digits {
+        pages = pages * 10 + u64::from(b - b'0');
+        any = true;
+    }
+    any.then(|| pages * PAGE_SIZE.load(Ordering::Relaxed))
+}
+
+#[cfg(unix)]
 extern "C" fn on_fatal_signal(sig: libc::c_int) {
-    // allocation failure inside pdfium or Rust ends in abort/trap; report it as exit 4
-    const MSG: &[u8] =
-        b"Error: killed by a fatal signal with -max-memory set; probably out of memory\n";
+    let name: &[u8] = match sig {
+        libc::SIGABRT => b"SIGABRT",
+        libc::SIGTRAP => b"SIGTRAP",
+        libc::SIGILL => b"SIGILL",
+        libc::SIGSEGV => b"SIGSEGV",
+        libc::SIGBUS => b"SIGBUS",
+        _ => b"a fatal signal",
+    };
+    // an allocation failure inside pdfium ends in a crash; tell it apart from an ordinary
+    // crash by how close the address space was to the limit (heuristic; unknown counts as OOM)
+    let limit = MEM_LIMIT.load(Ordering::Relaxed);
+    let oom = unsafe { vm_size() }.is_none_or(|v| v.saturating_mul(3) >= limit.saturating_mul(2));
+    let (tail, code): (&[u8], i32) = if oom {
+        (
+            b" with address space near -max-memory; probably out of memory\n",
+            EXIT_MEMORY,
+        )
+    } else {
+        (
+            b" well under -max-memory; probably a PDFium bug, not memory\n",
+            EXIT_OTHER,
+        )
+    };
     // SAFETY: write and _exit are async-signal-safe
     unsafe {
-        libc::write(2, MSG.as_ptr().cast(), MSG.len());
-        libc::_exit(if sig == 0 { EXIT_OTHER } else { EXIT_MEMORY });
+        for m in [b"Error: killed by ".as_slice(), name, tail] {
+            libc::write(2, m.as_ptr().cast(), m.len());
+        }
+        libc::_exit(code);
     }
 }
 
 #[cfg(unix)]
 fn limit_memory(mib: u64) {
-    let bytes = mib.saturating_mul(1 << 20) as libc::rlim_t;
+    let bytes = mib.saturating_mul(1 << 20);
+    MEM_LIMIT.store(bytes, Ordering::Relaxed);
+    let bytes = bytes as libc::rlim_t;
     let lim = libc::rlimit {
         rlim_cur: bytes,
         rlim_max: bytes,
     };
     // SAFETY: plain syscalls on valid arguments
     unsafe {
+        PAGE_SIZE.store(
+            libc::sysconf(libc::_SC_PAGESIZE).max(4096) as u64,
+            Ordering::Relaxed,
+        );
         if libc::setrlimit(libc::RLIMIT_AS, &lim) != 0 {
             eprintln!(
                 "Error: -max-memory {mib}: {}",
@@ -306,15 +365,13 @@ fn main() {
     };
 
     let n_pages = doc.pages().len() as u32;
-    let first = opts.first.unwrap_or(1).max(1);
-    let mut last = opts.last.unwrap_or(n_pages).min(n_pages);
-    if let Some(m) = opts.max_pages {
-        last = last.min(first.saturating_add(m).saturating_sub(1));
-    }
-    if first > last {
-        eprintln!("Error: wrong page range given: the first page ({first}) can not be after the last page ({last})");
-        exit(EXIT_OTHER);
-    }
+    let (first, last) = match page_range(n_pages, opts.first, opts.last, opts.max_pages) {
+        Ok(r) => r,
+        Err((first, last)) => {
+            eprintln!("Error: wrong page range given: the first page ({first}) can not be after the last page ({last})");
+            exit(EXIT_OTHER);
+        }
+    };
     let pad = n_pages.to_string().len();
     let ext = match (opts.png, opts.gray) {
         (true, _) => "png",
@@ -378,24 +435,40 @@ fn probe(bytes: usize) -> Result<Vec<u8>, PageError> {
     Ok(v)
 }
 
-fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<DynamicImage, PageError> {
-    let page = doc
-        .pages()
-        .get((pg - 1) as PdfPageIndex)
-        .map_err(|e| format!("could not load: {e:?}"))?;
-    let (w, h) = (page.width().value, page.height().value);
+// clamp like pdftoppm: -f below 1 is 1, -l past the end is the end
+fn page_range(
+    n_pages: u32,
+    first: Option<u32>,
+    last: Option<u32>,
+    max_pages: Option<u32>,
+) -> Result<(u32, u32), (u32, u32)> {
+    let first = first.unwrap_or(1).max(1);
+    let mut last = last.unwrap_or(n_pages).min(n_pages);
+    if let Some(m) = max_pages {
+        last = last.min(first.saturating_add(m).saturating_sub(1));
+    }
+    if first > last {
+        Err((first, last))
+    } else {
+        Ok((first, last))
+    }
+}
+
+// pixel size for a w x h pt page; true if -max-pixels shrank it
+fn target_size(w: f32, h: f32, opts: &Opts) -> Result<(i32, i32, bool), String> {
     if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
-        return Err(format!("degenerate page size {w}x{h} pt").into());
+        return Err(format!("degenerate page size {w}x{h} pt"));
     }
     let mut scale = match opts.scale_to {
         Some(s) => s as f32 / w.max(h),
         None => opts.dpi / 72.0,
     };
+    let mut downscaled = false;
     if let Some(max) = opts.max_pixels {
         let area = (w as f64 * scale as f64) * (h as f64 * scale as f64);
         if area > max as f64 {
             scale *= (max as f64 / area).sqrt() as f32;
-            eprintln!("Warning: page {pg}: downscaled to fit -max-pixels {max}");
+            downscaled = true;
         }
     }
     // pdftoppm rounds up
@@ -407,8 +480,29 @@ fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<DynamicImage, 
         (w_px, h_px) = ((w * scale) as i32, (h * scale) as i32);
     }
     if w_px < 1 || h_px < 1 {
-        return Err(format!("image size {w_px}x{h_px} too small").into());
+        return Err(format!("image size {w_px}x{h_px} too small"));
     }
+    Ok((w_px, h_px, downscaled))
+}
+
+fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<DynamicImage, PageError> {
+    let page = doc
+        .pages()
+        .get((pg - 1) as PdfPageIndex)
+        .map_err(|e| format!("could not load: {e:?}"))?;
+    let (w, h) = (page.width().value, page.height().value);
+    let (w_px, h_px) = match target_size(w, h, opts) {
+        Ok((wp, hp, downscaled)) => {
+            if downscaled {
+                eprintln!(
+                    "Warning: page {pg}: downscaled to fit -max-pixels {}",
+                    opts.max_pixels.unwrap()
+                );
+            }
+            (wp, hp)
+        }
+        Err(e) => return Err(e.into()),
+    };
     let config = PdfRenderConfig::new()
         .set_fixed_size(w_px, h_px)
         .render_form_data(true)
@@ -475,4 +569,119 @@ fn write_image(
         img.color().into(),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opts(dpi: f32, scale_to: Option<u32>, max_pixels: Option<u64>) -> Opts {
+        Opts {
+            first: None,
+            last: None,
+            dpi,
+            scale_to,
+            max_pages: None,
+            max_pixels,
+            max_memory: None,
+            png: false,
+            png_compress: 1,
+            gray: false,
+            opw: None,
+            upw: None,
+            pdfium_dir: None,
+            pdf: PathBuf::new(),
+            root: String::new(),
+        }
+    }
+
+    #[test]
+    fn page_range_clamps_like_pdftoppm() {
+        assert_eq!(page_range(12, None, None, None), Ok((1, 12)));
+        assert_eq!(page_range(12, Some(0), None, None), Ok((1, 12)));
+        assert_eq!(page_range(12, Some(3), Some(100), None), Ok((3, 12)));
+        assert_eq!(page_range(12, Some(3), None, Some(4)), Ok((3, 6)));
+        assert_eq!(page_range(12, Some(3), Some(4), Some(10)), Ok((3, 4)));
+        assert_eq!(page_range(12, Some(3), None, Some(u32::MAX)), Ok((3, 12)));
+        assert_eq!(
+            page_range(12, Some(u32::MAX), None, Some(1)),
+            Err((u32::MAX, 12))
+        );
+        assert_eq!(page_range(12, Some(20), None, None), Err((20, 12)));
+        assert_eq!(page_range(12, Some(5), Some(3), None), Err((5, 3)));
+        assert_eq!(page_range(0, None, None, None), Err((1, 0)));
+    }
+
+    #[test]
+    fn dpi_rounds_up() {
+        // 612x792 pt letter: 1275x1650 exact at 150; A4 at 300 rounds up
+        assert_eq!(
+            target_size(612.0, 792.0, &opts(150.0, None, None)),
+            Ok((1275, 1650, false))
+        );
+        assert_eq!(
+            target_size(595.276, 841.89, &opts(300.0, None, None)),
+            Ok((2481, 3508, false))
+        );
+        assert_eq!(
+            target_size(612.0, 792.0, &opts(72.0, None, None)),
+            Ok((612, 792, false))
+        );
+    }
+
+    #[test]
+    fn scale_to_fits_long_edge_and_ignores_dpi() {
+        assert_eq!(
+            target_size(612.0, 792.0, &opts(999.0, Some(4096), None)),
+            Ok((3166, 4096, false))
+        );
+        assert_eq!(
+            target_size(792.0, 612.0, &opts(72.0, Some(4096), None)),
+            Ok((4096, 3166, false))
+        );
+        // enlarges, like pdftoppm
+        assert_eq!(
+            target_size(10.0, 10.0, &opts(72.0, Some(100), None)),
+            Ok((100, 100, false))
+        );
+    }
+
+    #[test]
+    fn max_pixels_only_downscales_and_never_exceeds() {
+        let r = target_size(1000.0, 1000.0, &opts(300.0, None, Some(4_000_000))).unwrap();
+        assert_eq!(r, (2000, 2000, true));
+        assert_eq!(
+            target_size(100.0, 100.0, &opts(72.0, None, Some(4_000_000))),
+            Ok((100, 100, false))
+        );
+        // rounding up would cross the cap; floors instead
+        for (w, h, max) in [
+            (333.0, 777.0, 100_000u64),
+            (612.0, 792.0, 123_457),
+            (3.0, 5.0, 8),
+        ] {
+            let (wp, hp, _) = target_size(w, h, &opts(150.0, None, Some(max))).unwrap();
+            assert!(
+                wp as u64 * hp as u64 <= max,
+                "{w}x{h} max {max} -> {wp}x{hp}"
+            );
+        }
+    }
+
+    #[test]
+    fn degenerate_pages_rejected() {
+        for (w, h) in [
+            (0.0, 100.0),
+            (100.0, -1.0),
+            (f32::NAN, 100.0),
+            (f32::INFINITY, 100.0),
+        ] {
+            assert!(target_size(w, h, &opts(72.0, None, None)).is_err());
+        }
+        // ceil keeps any positive page at least 1x1
+        assert_eq!(
+            target_size(0.001, 0.001, &opts(1.0, None, None)),
+            Ok((1, 1, false))
+        );
+    }
 }
