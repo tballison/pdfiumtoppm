@@ -33,17 +33,19 @@ PDFIUM_PATH=pdfium/lib tests/compare.py pdfs -n 100
 
 Bucket listing: `https://digitalcorpora.s3.amazonaws.com/?prefix=corpora/files/CC-MAIN-2021-31-PDF-UNTRUNCATED/zipfiles/`.
 
-First 100 files of `0000.zip`, first 3 pages, Poppler 24.02 vs pdfium
-`chromium/8021` (pdfium-render 0.9.3, image 0.25.10), one Linux x86_64 box:
-no exit-code or page-count differences; similarity median 0.97-0.99, min 0.91 (all low cases: non-embedded font substitution). Total
-wall time:
+First 100 files of `0000.zip`, first 3 pages, Poppler 24.02 vs pdfiumtoppm
+0.1.1 (pdfium `chromium/8021`, pdfium-render 0.9.3, image 0.25.10), one
+Linux x86_64 box: no exit-code or page-count differences; 3 files with the
+1-pixel A4 size difference described below; no channel-swapped pages;
+RGB similarity median 0.97 (72 DPI) to 0.99 (300 DPI), min 0.91 (all low
+cases: non-embedded font substitution). Total wall time:
 
 | flags         | pdfiumtoppm | pdftoppm | notes |
 |---------------|-------------|----------|-------|
-| `-r 72` PPM   |  4.5 s |   8.5 s | |
-| `-r 72 -png`  |  5.1 s |  33.3 s | |
-| `-r 300` PPM  | 22.9 s |  49.2 s | equal medians; worst file 1.6 s vs 13.0 s |
-| `-r 300 -png` | 26.0 s | 292.9 s | |
+| `-r 72` PPM   |  4.6 s |   8.8 s | |
+| `-r 72 -png`  |  5.4 s |  32.5 s | |
+| `-r 300` PPM  | 23.2 s |  49.7 s | equal medians; worst file 1.6 s vs 13.2 s |
+| `-r 300 -png` | 30.1 s | 293.2 s | |
 
 Rendering is ~2x faster with a shorter tail. The PNG rows mostly measure
 encoding, where the two tools make different choices: `pdftoppm` spends time
