@@ -23,6 +23,13 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [ -f "$W/t-01.png" ] || fail "expected t-01.png"
 head -c 8 "$W/t-01.png" | grep -q PNG || fail "not a PNG"
 
+# pHYs: 300 dpi = 11811 px/m = 0x00002e23, twice, unit 1
+"$B" -png -r 300 -f 1 -l 1 "$T/twelve.pdf" "$W/phys"
+grep -q pHYs "$W/phys-01.png" || fail "png should carry a pHYs chunk"
+od -An -tx1 -v "$W/phys-01.png" | tr -d ' \n' | grep -q '7048597300002e2300002e2301' || fail "pHYs should say 300 dpi"
+"$B" -png -scale-to 842 -f 1 -l 1 "$T/tika-testPDF.pdf" "$W/phys72"
+od -An -tx1 -v "$W/phys72-1.png" | tr -d ' \n' | grep -q '7048597300000b1300000b1301' || fail "pHYs should follow -scale-to (72 dpi = 2835 px/m)"
+
 "$B" -png -png-compress 9 -f 1 -l 1 "$T/twelve.pdf" "$W/c9"
 "$B" -png -png-compress 0 -f 1 -l 1 "$T/twelve.pdf" "$W/c0"
 [ "$(stat -c %s "$W/c9-01.png")" -lt "$(stat -c %s "$W/c0-01.png")" ] || fail "png-compress 9 should be smaller than 0"

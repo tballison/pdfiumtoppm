@@ -55,6 +55,8 @@ pdfiumtoppm [options] <PDF-file> <image-root>
 ```
 
 Output: `<image-root>-<N>.<ext>`, `N` zero-padded to the page-count width.
+PNGs carry a pHYs chunk with the effective DPI, as `pdftoppm`'s do; OCR
+engines size text from it (tesseract mis-segments tables without it).
 Exit codes as `pdftoppm`: 0 ok, 1 could not open PDF, 2 could not write, 99
 other (including an empty page range); plus 4, ours, when `-max-memory` was
 hit.

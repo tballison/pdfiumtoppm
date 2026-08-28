@@ -213,7 +213,6 @@ dependencies = [
  "byteorder-lite",
  "moxcms",
  "num-traits",
- "png",
  "zune-core",
  "zune-jpeg",
 ]
@@ -339,11 +338,12 @@ dependencies = [
 
 [[package]]
 name = "pdfiumtoppm"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "image",
  "libc",
  "pdfium-render",
+ "png",
 ]
 
 [[package]]

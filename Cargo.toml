@@ -14,7 +14,7 @@
 
 [package]
 name = "pdfiumtoppm"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -23,7 +23,8 @@ repository = "https://github.com/tballison/pdfiumtoppm"
 
 [dependencies]
 pdfium-render = "=0.9.3"
-image = { version = "=0.25.10", default-features = false, features = ["png", "pnm"] }
+image = { version = "=0.25.10", default-features = false, features = ["pnm"] }
+png = "=0.18.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.189"

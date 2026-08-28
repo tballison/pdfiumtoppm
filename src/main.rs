@@ -23,7 +23,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::fs::File;
 use std::io::BufWriter;
 
-use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::codecs::pnm::{PnmEncoder, PnmSubtype, SampleEncoding};
 use image::{DynamicImage, ImageEncoder};
 use pdfium_render::prelude::*;
@@ -416,8 +415,8 @@ fn main() {
     for pg in first..=last {
         let out = format!("{}-{:0pad$}.{ext}", opts.root, pg);
         match render_page(&doc, pg, &opts) {
-            Ok(img) => {
-                if let Err(e) = write_image(&img, &out, &opts) {
+            Ok((img, dpi)) => {
+                if let Err(e) = write_image(&img, dpi, &out, &opts) {
                     eprintln!("Error: could not write {out}: {e}");
                     exit(EXIT_OPEN_OUTPUT);
                 }
@@ -486,8 +485,8 @@ fn page_range(
     }
 }
 
-// pixel size for a w x h pt page; true if -max-pixels shrank it
-fn target_size(w: f32, h: f32, opts: &Opts) -> Result<(i32, i32, bool), String> {
+// pixel size for a w x h pt page, the pixels-per-point scale used, and whether -max-pixels shrank it
+fn target_size(w: f32, h: f32, opts: &Opts) -> Result<(i32, i32, f32, bool), String> {
     if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
         return Err(format!("degenerate page size {w}x{h} pt"));
     }
@@ -514,24 +513,25 @@ fn target_size(w: f32, h: f32, opts: &Opts) -> Result<(i32, i32, bool), String> 
     if w_px < 1 || h_px < 1 {
         return Err(format!("image size {w_px}x{h_px} too small"));
     }
-    Ok((w_px, h_px, downscaled))
+    Ok((w_px, h_px, scale, downscaled))
 }
 
-fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<DynamicImage, PageError> {
+// the image and its effective DPI
+fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<(DynamicImage, f32), PageError> {
     let page = doc
         .pages()
         .get((pg - 1) as PdfPageIndex)
         .map_err(|e| format!("could not load: {e:?}"))?;
     let (w, h) = (page.width().value, page.height().value);
-    let (w_px, h_px) = match target_size(w, h, opts) {
-        Ok((wp, hp, downscaled)) => {
+    let (w_px, h_px, scale) = match target_size(w, h, opts) {
+        Ok((wp, hp, scale, downscaled)) => {
             if downscaled {
                 eprintln!(
                     "Warning: page {pg}: downscaled to fit -max-pixels {}",
                     opts.max_pixels.unwrap()
                 );
             }
-            (wp, hp)
+            (wp, hp, scale)
         }
         Err(e) => return Err(e.into()),
     };
@@ -567,27 +567,44 @@ fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<DynamicImage, 
         }
     }
     let (wu, hu) = (w_px as u32, h_px as u32);
-    Ok(if opts.gray {
+    let img = if opts.gray {
         DynamicImage::ImageLuma8(image::GrayImage::from_raw(wu, hu, out).unwrap())
     } else {
         DynamicImage::ImageRgb8(image::RgbImage::from_raw(wu, hu, out).unwrap())
-    })
+    };
+    Ok((img, scale * 72.0))
 }
 
 fn write_image(
     img: &DynamicImage,
+    dpi: f32,
     out: &str,
     opts: &Opts,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let w = BufWriter::new(File::create(out)?);
     if opts.png {
-        let level = CompressionType::Level(opts.png_compress);
-        PngEncoder::new_with_quality(w, level, FilterType::Adaptive).write_image(
-            img.as_bytes(),
-            img.width(),
-            img.height(),
-            img.color().into(),
-        )?;
+        let mut enc = png::Encoder::new(w, img.width(), img.height());
+        enc.set_color(if img.color().has_color() {
+            png::ColorType::Rgb
+        } else {
+            png::ColorType::Grayscale
+        });
+        enc.set_depth(png::BitDepth::Eight);
+        // same mapping as the image crate's PngEncoder for -png-compress
+        if opts.png_compress == 0 {
+            enc.set_compression(png::Compression::NoCompression);
+        } else {
+            enc.set_deflate_compression(png::DeflateCompression::Level(opts.png_compress));
+        }
+        enc.set_filter(png::Filter::Adaptive);
+        // pHYs like pdftoppm: tesseract sizes text from it and misreads without it
+        let ppm = (dpi / 0.0254).round() as u32;
+        enc.set_pixel_dims(Some(png::PixelDimensions {
+            xppu: ppm,
+            yppu: ppm,
+            unit: png::Unit::Meter,
+        }));
+        enc.write_header()?.write_image_data(img.as_bytes())?;
         return Ok(());
     }
     // binary P6/P5 like pdftoppm; image's default is PAM (P7)
@@ -629,6 +646,10 @@ mod tests {
         }
     }
 
+    fn size(r: Result<(i32, i32, f32, bool), String>) -> Result<(i32, i32, bool), String> {
+        r.map(|(w, h, _, d)| (w, h, d))
+    }
+
     #[test]
     fn page_range_clamps_like_pdftoppm() {
         assert_eq!(page_range(12, None, None, None), Ok((1, 12)));
@@ -650,15 +671,15 @@ mod tests {
     fn dpi_rounds_up() {
         // 612x792 pt letter: 1275x1650 exact at 150; A4 at 300 rounds up
         assert_eq!(
-            target_size(612.0, 792.0, &opts(150.0, None, None)),
+            size(target_size(612.0, 792.0, &opts(150.0, None, None))),
             Ok((1275, 1650, false))
         );
         assert_eq!(
-            target_size(595.276, 841.89, &opts(300.0, None, None)),
+            size(target_size(595.276, 841.89, &opts(300.0, None, None))),
             Ok((2481, 3508, false))
         );
         assert_eq!(
-            target_size(612.0, 792.0, &opts(72.0, None, None)),
+            size(target_size(612.0, 792.0, &opts(72.0, None, None))),
             Ok((612, 792, false))
         );
     }
@@ -666,26 +687,36 @@ mod tests {
     #[test]
     fn scale_to_fits_long_edge_and_ignores_dpi() {
         assert_eq!(
-            target_size(612.0, 792.0, &opts(999.0, Some(4096), None)),
+            size(target_size(612.0, 792.0, &opts(999.0, Some(4096), None))),
             Ok((3166, 4096, false))
         );
         assert_eq!(
-            target_size(792.0, 612.0, &opts(72.0, Some(4096), None)),
+            size(target_size(792.0, 612.0, &opts(72.0, Some(4096), None))),
             Ok((4096, 3166, false))
         );
         // enlarges, like pdftoppm
         assert_eq!(
-            target_size(10.0, 10.0, &opts(72.0, Some(100), None)),
+            size(target_size(10.0, 10.0, &opts(72.0, Some(100), None))),
             Ok((100, 100, false))
         );
     }
 
     #[test]
     fn max_pixels_only_downscales_and_never_exceeds() {
-        let r = target_size(1000.0, 1000.0, &opts(300.0, None, Some(4_000_000))).unwrap();
-        assert_eq!(r, (2000, 2000, true));
+        let (w, h, scale, down) =
+            target_size(1000.0, 1000.0, &opts(300.0, None, Some(4_000_000))).unwrap();
+        assert_eq!((w, h, down), (2000, 2000, true));
+        assert!(
+            (scale * 72.0 - 144.0).abs() < 0.01,
+            "effective dpi {}",
+            scale * 72.0
+        );
         assert_eq!(
-            target_size(100.0, 100.0, &opts(72.0, None, Some(4_000_000))),
+            size(target_size(
+                100.0,
+                100.0,
+                &opts(72.0, None, Some(4_000_000))
+            )),
             Ok((100, 100, false))
         );
         // rounding up would cross the cap; floors instead
@@ -694,7 +725,7 @@ mod tests {
             (612.0, 792.0, 123_457),
             (3.0, 5.0, 8),
         ] {
-            let (wp, hp, _) = target_size(w, h, &opts(150.0, None, Some(max))).unwrap();
+            let (wp, hp, _, _) = target_size(w, h, &opts(150.0, None, Some(max))).unwrap();
             assert!(
                 wp as u64 * hp as u64 <= max,
                 "{w}x{h} max {max} -> {wp}x{hp}"
@@ -727,7 +758,7 @@ mod tests {
         }
         // ceil keeps any positive page at least 1x1
         assert_eq!(
-            target_size(0.001, 0.001, &opts(1.0, None, None)),
+            size(target_size(0.001, 0.001, &opts(1.0, None, None))),
             Ok((1, 1, false))
         );
     }

@@ -16,6 +16,13 @@ limitations under the License.
 
 # Changes
 
+## 0.1.2
+
+- PNG output carries a pHYs chunk with the effective DPI, as `pdftoppm`'s
+  does. Without it tesseract guesses the resolution and mis-segments
+  tables; a Tika OCR bake-off found a page going from perfect to junk for
+  this reason alone. PNG is now encoded with the `png` crate directly.
+
 ## 0.1.1
 
 - `-max-memory` now defaults to 4096 MiB or half of physical RAM, whichever
