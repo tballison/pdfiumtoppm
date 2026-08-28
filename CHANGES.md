@@ -16,7 +16,7 @@ limitations under the License.
 
 # Changes
 
-## 0.1.0 (unreleased)
+## 0.1.0
 
 - Initial release: `pdftoppm`-compatible subset (`-f -l -r -scale-to -png
   -gray -opw -upw`), plus `-max-pages`, `-max-pixels`, `-max-memory`, `-png-compress`,
