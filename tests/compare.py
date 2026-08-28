@@ -39,11 +39,15 @@ def size(f):
     return None
 
 def sim(fa, fb):
-    a, b = Image.open(fa).convert("L"), Image.open(fb).convert("L")
+    """(similarity, similarity with fa's R and B swapped). Mean pixel distance barely
+    moves on a channel swap over a mostly white page, so the swapped score is the
+    check: if it is higher, the channels are in the wrong order."""
+    a, b = Image.open(fa).convert("RGB"), Image.open(fb).convert("RGB")
     if a.size != b.size:
         return None
     x, y = (np.asarray(i, dtype=np.float32) for i in (a, b))
-    return float(1 - np.mean(np.abs(x - y)) / 255)
+    s = float(1 - np.mean(np.abs(x - y)) / 255)
+    return s, float(1 - np.mean(np.abs(x[..., ::-1] - y)) / 255)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -66,22 +70,27 @@ def main():
             n = os.path.splitext(os.path.basename(pdf))[0]
             ra = run([a.pdfiumtoppm] + flags + [pdf], f"{work}/{n}-a", a.timeout)
             rb = run([a.pdftoppm, "-cropbox"] + flags + [pdf], f"{work}/{n}-b", a.timeout)
-            sims, dims = [], []
+            sims, dims, swapped = [], [], 0
             for fa, fb in zip(ra[2], rb[2]):
                 da, db = size(fa), size(fb)
                 if da != db:
                     dims.append(f"{da}!={db}")
                 if Image and fa.endswith(".png"):
-                    sims.append(sim(fa, fb))
-            low = [s for s in sims if s is not None]
+                    ss = sim(fa, fb)
+                    if ss:
+                        sims.append(ss[0])
+                        swapped += ss[1] > ss[0] + 0.001
+            low = sims
             rows.append(dict(file=n, rc_a=ra[0], rc_b=rb[0], pages_a=len(ra[2]), pages_b=len(rb[2]),
                              t_a=round(ra[1], 3), t_b=round(rb[1], 3),
                              min_sim=round(min(low), 4) if low else "",
-                             dim_mismatch=";".join(dims), err_a=ra[3], err_b=rb[3]))
+                             channel_swap=swapped, dim_mismatch=";".join(dims), err_a=ra[3], err_b=rb[3]))
             r = rows[-1]
             flag = ""
             if r["rc_a"] != r["rc_b"] or r["pages_a"] != r["pages_b"] or dims or (low and min(low) < a.min_sim):
                 flag = "  <-- DIFF"
+            if swapped:
+                flag += f"  <-- R/B SWAPPED on {swapped} page(s)"
             print(f'{n} rc={r["rc_a"]}/{r["rc_b"]} pages={r["pages_a"]}/{r["pages_b"]} '
                   f't={r["t_a"]:.2f}/{r["t_b"]:.2f}s sim={r["min_sim"]}{flag}', flush=True)
             for f in ra[2] + rb[2]:
@@ -97,7 +106,8 @@ def main():
     ta, tb = [r["t_a"] for r in rows], [r["t_b"] for r in rows]
     print(f"\n{len(rows)} files. rc mismatches: {sum(r['rc_a'] != r['rc_b'] for r in rows)}, "
           f"page-count mismatches: {sum(r['pages_a'] != r['pages_b'] for r in rows)}, "
-          f"dimension mismatches: {sum(bool(r['dim_mismatch']) for r in rows)}")
+          f"dimension mismatches: {sum(bool(r['dim_mismatch']) for r in rows)}, "
+          f"channel-swapped files: {sum(bool(r['channel_swap']) for r in rows)}")
     print(f"time pdfiumtoppm total {sum(ta):.1f}s median {statistics.median(ta):.3f}s max {max(ta):.2f}s | "
           f"pdftoppm total {sum(tb):.1f}s median {statistics.median(tb):.3f}s max {max(tb):.2f}s")
     if Image:

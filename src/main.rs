@@ -43,7 +43,8 @@ Usage: pdfiumtoppm [options] <PDF-file> <image-root>
   -max-pages <int>   : render at most this many pages
   -max-pixels <int>  : downscale any page whose width*height would exceed this
   -max-memory <int>  : address-space limit in MiB (setrlimit RLIMIT_AS); exit 4 if hit
-                       (a crash far below the limit exits 99 instead)
+                       (default: 4096 or half of RAM, whichever is lower; 0 disables;
+                       a crash far below the limit exits 99 instead)
   -png               : generate a PNG file (default is PPM)
   -png-compress <int>: PNG zlib level 0-9 (default 1; pdftoppm uses 6)
   -gray              : generate a grayscale image file
@@ -152,7 +153,6 @@ fn parse_args() -> Opts {
         ("-scale-to", scale_to == Some(0)),
         ("-max-pages", max_pages == Some(0)),
         ("-max-pixels", max_pixels == Some(0)),
-        ("-max-memory", max_memory == Some(0)),
     ] {
         if zero {
             usage_err(&format!("{flag} must be positive"));
@@ -223,6 +223,37 @@ fn bind_pdfium(explicit: Option<&Path>) -> Pdfium {
 #[cfg(not(unix))]
 fn limit_memory(_mib: u64) {
     usage_err("-max-memory is only supported on Unix");
+}
+
+#[cfg(not(unix))]
+fn physical_memory() -> Option<u64> {
+    None
+}
+
+#[cfg(unix)]
+fn physical_memory() -> Option<u64> {
+    // SAFETY: plain sysconf queries
+    let (pages, page) = unsafe {
+        (
+            libc::sysconf(libc::_SC_PHYS_PAGES),
+            libc::sysconf(libc::_SC_PAGESIZE),
+        )
+    };
+    (pages > 0 && page > 0).then(|| pages as u64 * page as u64)
+}
+
+const DEFAULT_MAX_MEMORY_MIB: u64 = 4096;
+
+// None = no limit: -max-memory 0, or a platform that cannot set one
+fn resolve_max_memory(flag: Option<u64>, phys: Option<u64>) -> Option<u64> {
+    match flag {
+        Some(0) => None,
+        Some(m) => Some(m),
+        None if cfg!(unix) => Some(phys.map_or(DEFAULT_MAX_MEMORY_MIB, |b| {
+            DEFAULT_MAX_MEMORY_MIB.min(b >> 21).max(1)
+        })),
+        None => None,
+    }
 }
 
 #[cfg(unix)]
@@ -325,7 +356,8 @@ fn limit_memory(mib: u64) {
 }
 
 fn main() {
-    let opts = parse_args();
+    let mut opts = parse_args();
+    opts.max_memory = resolve_max_memory(opts.max_memory, physical_memory());
     if let Some(m) = opts.max_memory {
         limit_memory(m); // before libpdfium is loaded, so its allocations count
     }
@@ -505,6 +537,8 @@ fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<DynamicImage, 
     };
     let config = PdfRenderConfig::new()
         .set_fixed_size(w_px, h_px)
+        // pdfium-render defaults this on, which makes the buffer RGBA while format() still says BGRA
+        .set_reverse_byte_order(false)
         .render_form_data(true)
         .render_annotations(true)
         .use_grayscale_rendering(opts.gray);
@@ -665,6 +699,19 @@ mod tests {
                 wp as u64 * hp as u64 <= max,
                 "{w}x{h} max {max} -> {wp}x{hp}"
             );
+        }
+    }
+
+    #[test]
+    fn default_max_memory_is_4g_or_half_ram() {
+        const G: u64 = 1 << 30;
+        assert_eq!(resolve_max_memory(Some(0), Some(32 * G)), None);
+        assert_eq!(resolve_max_memory(Some(512), Some(32 * G)), Some(512));
+        if cfg!(unix) {
+            assert_eq!(resolve_max_memory(None, Some(32 * G)), Some(4096));
+            assert_eq!(resolve_max_memory(None, Some(4 * G)), Some(2048));
+            assert_eq!(resolve_max_memory(None, Some(1)), Some(1));
+            assert_eq!(resolve_max_memory(None, None), Some(4096));
         }
     }
 

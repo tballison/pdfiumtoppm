@@ -45,6 +45,9 @@ done
 [ "$(head -c 20 "$W/h-1.ppm" | sed -n 2p)" = "2000 2000 255" ] || fail "max-pixels"
 
 "$B" -r 72 -max-memory 64 -f 1 -l 1 "$T/twelve.pdf" "$W/mem" || fail "64 MiB should suffice for a small page"
+"$B" -r 72 -max-memory 0 -f 1 -l 1 "$T/twelve.pdf" "$W/mem0" || fail "-max-memory 0 should disable the limit"
+"$B" -r 300 "$T/huge.pdf" "$W/memd" 2>"$W/memd.err" && rc=0 || rc=$?
+[ "$rc" = 4 ] && grep -q "over -max-memory" "$W/memd.err" || fail "default -max-memory should catch the huge page (rc $rc)"
 "$B" -r 300 -max-memory 256 "$T/huge.pdf" "$W/memh" 2>"$W/memh.err" && rc=0 || rc=$?
 [ "$rc" = 4 ] && [ ! -f "$W/memh-1.ppm" ] && grep -q "over -max-memory" "$W/memh.err" || fail "over -max-memory should skip the page and exit 4 (rc $rc)"
 "$B" -r 300 -max-memory 256 -max-pixels 4000000 "$T/huge.pdf" "$W/memp" 2>/dev/null || fail "-max-pixels should keep huge page under -max-memory"
@@ -56,7 +59,7 @@ done
 [ "$rc" = 99 ] || fail "range with no renderable page should exit 99 (got $rc)"
 "$B" -r nan "$T/twelve.pdf" "$W/x" 2>/dev/null && rc=0 || rc=$?
 [ "$rc" = 99 ] || fail "-r nan should be rejected"
-for bad in "-f 20" "-f 5 -l 3" "-max-pages 0" "-scale-to 0" "-max-pixels 0"; do
+for bad in "-f 20" "-f 5 -l 3" "-max-pages 0" "-scale-to 0" "-max-pixels 0" "-max-memory -1"; do
   "$B" $bad "$T/twelve.pdf" "$W/x" 2>/dev/null && rc=0 || rc=$?
   [ "$rc" = 99 ] || fail "'$bad' should exit 99 (got $rc)"
   ls "$W"/x-* >/dev/null 2>&1 && fail "'$bad' should write nothing"
@@ -67,6 +70,13 @@ done
 # real content: rendered page must not be blank (bytes other than 0xff beyond the header)
 "$B" -r 72 "$T/tika-testPDF.pdf" "$W/txt"
 [ "$(tr -d '\377' < "$W/txt-1.ppm" | wc -c)" -gt 1000 ] || fail "text page rendered blank"
+
+# channel order: top half red, bottom half blue (72 dpi -> 100x100, header "P6\n100 100\n255\n" = 15 bytes)
+"$B" -r 72 "$T/redblue.pdf" "$W/rb"
+[ "$(od -An -tx1 -j 15 -N 3 "$W/rb-1.ppm" | tr -d ' ')" = ff0000 ] || fail "top pixel should be red"
+[ "$(od -An -tx1 -j $((15 + 99*300)) -N 3 "$W/rb-1.ppm" | tr -d ' ')" = 0000ff ] || fail "bottom pixel should be blue"
+"$B" -r 72 -gray "$T/redblue.pdf" "$W/rbg"
+[ "$(od -An -tx1 -j 15 -N 1 "$W/rbg-1.pgm" | tr -d ' ')" = 4c ] || fail "red should be luma 76"
 
 P="$T/tika-testPassword4Spaces.pdf"   # password is four spaces
 "$B" -r 72 "$P" "$W/enc" 2>/dev/null && fail "encrypted without password should fail"

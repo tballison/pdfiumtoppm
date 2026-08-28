@@ -16,6 +16,16 @@ limitations under the License.
 
 # Changes
 
+## 0.1.1
+
+- `-max-memory` now defaults to 4096 MiB or half of physical RAM, whichever
+  is lower; `-max-memory 0` disables it. Previously there was no limit, and
+  a 5 KB PDF could take the machine down with it.
+- Fix red and blue swapped in color output (pdfium-render's default
+  `FPDF_REVERSE_BYTE_ORDER` made the buffer RGBA while it was read as BGRA).
+  Grayscale output was unaffected. `tests/compare.py` now compares in RGB,
+  which is how the 0.1.0 corpus run missed this.
+
 ## 0.1.0
 
 - Initial release: `pdftoppm`-compatible subset (`-f -l -r -scale-to -png

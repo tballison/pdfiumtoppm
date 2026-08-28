@@ -43,6 +43,7 @@ pdfiumtoppm [options] <PDF-file> <image-root>
   -max-pages <int>    render at most this many pages (after -f/-l)
   -max-pixels <int>   downscale any page whose width*height exceeds this
   -max-memory <int>   address-space limit in MiB; exit 4 if any page hits it
+                      (default 4096 or half of RAM, whichever is lower; 0 = none)
   -png                write PNG (default binary PPM/PGM)
   -png-compress <int> PNG zlib level 0-9 (default 1; pdftoppm uses 6)
   -gray               grayscale
@@ -61,15 +62,24 @@ hit.
 `-max-pages`, `-max-pixels`, and `-max-memory` are additions for untrusted
 input. `-scale-to` matches `pdftoppm`, including enlarging; `-max-pixels`
 only ever downscales. `-max-memory` (Unix only) sets `RLIMIT_AS` before `libpdfium` is
-loaded. A page that would not fit is skipped with a message and the run
+loaded. Unlike `pdftoppm`, it is on by default: 4096 MiB or half of physical
+RAM, whichever is lower; `-max-memory 0` turns it off. A page that would not fit is skipped with a message and the run
 exits 4 after the remaining pages. If the process instead dies mid-page from
 a fatal signal (an allocation failure inside PDFium ends that way), the exit
 code is a guess: 4 when the address space was within a third of the limit,
 99 when it was well under, since a crash that far from the limit is more
 likely a PDFium bug than memory. Either way the message names the signal,
-and any output file being written at that moment may be truncated. Without
-`-max-memory` no signal is caught; a crash is a crash. Budget about 8 bytes per output pixel on top
-of a ~64 MiB baseline (a 4096x4096 render needs ~130 MiB more).
+and any output file being written at that moment may be truncated. Rust
+prints `fatal runtime error: Rust cannot catch foreign exceptions, aborting`
+just before that message when PDFium's allocation failure surfaces as a C++
+exception; that line is expected. Without `-max-memory` no signal is caught;
+a crash is a crash. The bitmap alone needs about 8 bytes per output pixel on top of a ~64 MiB
+baseline (a 4096x4096 render, ~130 MiB more); that is a floor, not a
+budget. Page content can demand any amount regardless of output size (a
+5 KB PDF has been seen to take 18 GB and the machine with it), so the
+default limit exists for untrusted input; raise it if a legitimate page
+needs more, and know that with `-max-memory 0` the kernel's out-of-memory
+killer is the only backstop.
 
 A page that fails to render is reported and skipped; exit stays 0 unless no
 page rendered (99).
@@ -119,7 +129,9 @@ Tags `v*` publish `pdfiumtoppm-<tag>-linux-{x64,arm64}.tar.gz`.
 ## Comparing with pdftoppm
 
 `tests/compare.py <pdf-dir>` runs both tools over a corpus and reports
-differences and timings; results and caveats are in
+differences, timings, and whether a page scores better with its red and
+blue channels swapped (the 0.1.0 color bug; mean pixel distance alone does
+not catch it); results and caveats are in
 [docs/pdftoppm-comparison.md](docs/pdftoppm-comparison.md). Rendering is
 ~2x faster with a shorter tail; PNG timing differences are mostly encoder
 settings (`-png-compress`). For tesseract, write PPM.
