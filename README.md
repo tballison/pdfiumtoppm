@@ -134,9 +134,12 @@ Tags `v*` publish `pdfiumtoppm-<tag>-linux-{x64,arm64}.tar.gz`.
 differences, timings, and whether a page scores better with its red and
 blue channels swapped (the 0.1.0 color bug; mean pixel distance alone does
 not catch it); results and caveats are in
-[docs/pdftoppm-comparison.md](docs/pdftoppm-comparison.md). Rendering is
-~2x faster with a shorter tail; PNG timing differences are mostly encoder
-settings (`-png-compress`). For tesseract, write PPM.
+[docs/pdftoppm-comparison.md](docs/pdftoppm-comparison.md). Rasterization is
+~1.5-2x faster; end-to-end PDF-to-PNG is ~7-10x, almost entirely because
+`pdftoppm` has no encoder-effort option (`-png-compress` here). For
+tesseract, fast PNG beats PPM: raw PPM/PGM is ~10x the bytes and carries no
+DPI, so tesseract must be told the resolution explicitly or it may
+mis-segment.
 
 ## Related tools
 
