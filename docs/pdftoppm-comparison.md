@@ -33,6 +33,8 @@ PDFIUM_PATH=pdfium/lib tests/compare.py pdfs -n 100
 
 Bucket listing: `https://digitalcorpora.s3.amazonaws.com/?prefix=corpora/files/CC-MAIN-2021-31-PDF-UNTRUNCATED/zipfiles/`.
 
+## Experiment 1: first 3 pages of 100 files
+
 First 100 files of `0000.zip`, first 3 pages, Poppler 24.02 vs pdfiumtoppm
 0.1.1 (pdfium `chromium/8021`, pdfium-render 0.9.3, image 0.25.10), one
 Linux x86_64 box: no exit-code or page-count differences; 3 files with the
@@ -59,46 +61,80 @@ leaves the trade-off to `-png-compress`. One 300 DPI scanned page:
 | `-png-compress 9` | 4.4 s | 5.5 MB |
 | pdftoppm | 10.0 s | 5.5 MB |
 
-For tesseract, write PPM; it reads PPM/PGM directly.
+For tesseract, fast PNG beats PPM: raw PPM/PGM is ~10x the bytes and
+carries no DPI, so tesseract must be told the resolution explicitly or it
+may mis-segment tables. Measured in an OCR pipeline, PGM output was ~3%
+slower end to end than `-png-compress 1` - the larger files cost more in
+I/O and decode than the fast PNG encode saves.
 
 Expect occasional 1-pixel size differences where `pt * dpi / 72` is an exact
 integer (A4 at 300 DPI: 2482 vs 2483). `pdftoppm` also reports syntax
 problems it finds in damaged files; this tool is silent unless a page fails.
 
-## Whole-document comparison, 1,000 files
+## Experiment 2: every page of all 1,000 files
 
 Same corpus source, files `0000000.pdf`-`0000999.pdf` of `0000.zip` (16,248
 pages), every page of every document in one invocation per tool, gray
 200 DPI, 4 concurrent workers, Poppler 24.02 vs pdfiumtoppm 0.1.2, one
-Linux x86_64 laptop (i7-1260P). Both tools opened the same 996 files and
-failed the same 4 (one encrypted, three truncated).
+Linux x86_64 laptop (i7-1260P). This experiment measured both speed
+(rasterization and PNG encoding separately) and output quality (per-page
+RGB similarity). Both tools opened the same 996 files and failed the same
+4 (one encrypted, three truncated).
 
-Raw PGM output (no encoder; byte-identical 58.9 GB from each tool) isolates
-rasterization:
+### Speed
 
-| pages/file | pdfiumtoppm | pdftoppm ms/page | ratio |
+Raw PGM output isolates rasterization: no encoder runs, and since PGM
+size is determined by page dimensions alone, both tools wrote the same
+58.9 GB output volume (the pixel contents are not identical - see the
+output-quality section below):
+
+| pages/file | pdfiumtoppm (ms/page) | pdftoppm (ms/page) | ratio |
 |---|---|---|---|
-| 1 | 100 | 151 | 1.5x |
-| 4-10 | 41 | 66 | 1.6x |
-| 101+ | 26 | 54 | 2.1x |
-| total | 546 s | 995 s | 1.8x |
+| 1 | 100 ms | 151 ms | 1.5x |
+| 4-10 | 41 ms | 66 ms | 1.6x |
+| 101+ | 26 ms | 54 ms | 2.1x |
+| total (all 16,248 pages) | 546 s | 995 s | 1.8x |
 
-As rasterizers the two are close - Poppler's is excellent. Re-running
+As rasterizers the two are close. Re-running
 against Poppler 26.08 built from source (same corpus, same machine, same
 run for both tools) gives the same picture: rasterization ratio 1.65x
 (1.4x single-page to 1.8x on 100+ pages), and 26.08 measured no faster
 than 24.02 here. The end-to-end gap is PNG encoding: `pdftoppm` has no
 compression-effort option (still true in 26.08), while
-this tool defaults to fast (`-png-compress 1`). PNG output on the same
-corpus: 762 s vs 7,446 s (with 11 large documents hitting a 120-second
-per-document cap that neither tool hits in PGM mode); with
-`-png-compress 6` for comparable effort, 931 s vs 6,932 s.
+this tool defaults to fast (`-png-compress 1`). PNG output at default
+settings on the same corpus: 762 s vs 7,446 s, with 11 large documents
+hitting a 120-second per-document cap that neither tool hits in PGM mode.
+With `-png-compress 6` for comparable encoder effort:
+
+| pages/file | pdfiumtoppm (ms/page) | pdftoppm (ms/page) | ratio |
+|---|---|---|---|
+| 1 | 164 ms | 989 ms | 6.0x |
+| 4-10 | 83 ms | 597 ms | 7.2x |
+| 101+ | 57 ms | 482 ms | 8.5x |
+| total (991 files, 13,130 pages) | 931 s | 6,932 s | 7.4x |
+
+(The page total is lower than the PGM table's because files that timed out
+in either tool's PNG mode are excluded from the pairwise comparison.)
 
 With matched encoder effort (`-png-compress 6`) against 26.08 in the same
 run, PDF-to-PNG is 7.1x (1,089 s vs 7,712 s over the files both completed),
 with the same handful of large documents hitting the per-document cap.
 
-Per-page agreement between the two across all rendered pages: mean RGB
-similarity 0.984 (same metric as above), identical page counts, no
-channel-order or geometry differences beyond the 1-pixel rounding noted
-above.
+### Output quality (RGB similarity)
+
+A separate color pass (200 DPI, RGB PNG) compared every rendered page of
+the two tools pixel-by-pixel: mean RGB similarity 0.984 (same
+1 - mean|diff|/255 metric as Experiment 1), identical page counts, zero
+pages that score better with red/blue channels swapped, and no geometry
+differences beyond the 1-pixel rounding noted above. The visible
+differences are ordinary font-substitution choices on pages with
+non-embedded fonts.
+
+Limits of the metric: a page-wide mean catches page-scale damage (missing
+images, wrong rotation, walls of .notdef boxes), not a single wrong word;
+it measures agreement between the two tools, not correctness where both
+make the same mistake; and structured-but-small differences score high -
+a full red/blue channel swap only drops it to ~0.96, which is why the
+harness also runs an explicit swapped-channel check. The low tail
+(0.86-0.93) is dominated by legitimate font substitution and was inspected
+by eye. Pages a tool timed out on are excluded from comparison.
