@@ -42,14 +42,14 @@ pdfiumtoppm [options] <PDF-file> <image-root>
   -scale-to <int>     scale the long edge to this many pixels
   -max-pages <int>    render at most this many pages (after -f/-l)
   -max-pixels <int>   downscale any page whose width*height exceeds this
-  -max-memory <int>   address-space limit in MiB; exit 4 if any page hits it
+  -max-memory <int>   memory limit in MiB; exit 4 if any page hits it
                       (default 4096 or half of RAM, whichever is lower; 0 = none)
   -png                write PNG (default binary PPM/PGM)
   -png-compress <int> PNG zlib level 0-9 (default 1; pdftoppm uses 6)
   -gray               grayscale
   -opw <string>       owner password
   -upw <string>       user password
-  -pdfium <path>      directory containing libpdfium.so
+  -pdfium <path>      directory containing the pdfium library
   -v                  print version
   -h                  print usage
 ```
@@ -63,7 +63,8 @@ hit.
 
 `-max-pages`, `-max-pixels`, and `-max-memory` are additions for untrusted
 input. `-scale-to` matches `pdftoppm`, including enlarging; `-max-pixels`
-only ever downscales. `-max-memory` (Unix only) sets `RLIMIT_AS` before `libpdfium` is
+only ever downscales. `-max-memory` sets `RLIMIT_AS` on Unix, and a Job Object
+commit limit on Windows, before the pdfium library is
 loaded. Unlike `pdftoppm`, it is on by default: 4096 MiB or half of physical
 RAM, whichever is lower; `-max-memory 0` turns it off. A page that would not fit is skipped with a message and the run
 exits 4 after the remaining pages. If the process instead dies mid-page from
@@ -75,7 +76,9 @@ and any output file being written at that moment may be truncated. Rust
 prints `fatal runtime error: Rust cannot catch foreign exceptions, aborting`
 just before that message when PDFium's allocation failure surfaces as a C++
 exception; that line is expected. Without `-max-memory` no signal is caught;
-a crash is a crash. The bitmap alone needs about 8 bytes per output pixel on top of a ~64 MiB
+a crash is a crash. The crash-code guess is Unix-only: on Windows a page over
+the limit is still skipped with exit 4, but if PDFium itself dies mid-page the
+process exits with the OS status instead. The bitmap alone needs about 8 bytes per output pixel on top of a ~64 MiB
 baseline (a 4096x4096 render, ~130 MiB more); that is a floor, not a
 budget. Page content can demand any amount regardless of output size (a
 5 KB PDF has been seen to take 18 GB and the machine with it), so the
@@ -92,31 +95,33 @@ box (PDFium); `pdftoppm` defaults to the media box.
 
 ## Install
 
-Release tarballs contain `pdfiumtoppm` and a matching `libpdfium.so`; keep
+Release archives contain `pdfiumtoppm` and a matching pdfium library; keep
 them together:
 
 ```sh
-tar xzf pdfiumtoppm-v0.1.0-linux-x64.tar.gz
-sudo mv pdfiumtoppm-v0.1.0-linux-x64 /opt/pdfiumtoppm
+tar xzf pdfiumtoppm-v0.2.0-linux-x64.tar.gz
+sudo mv pdfiumtoppm-v0.2.0-linux-x64 /opt/pdfiumtoppm
 sudo ln -s /opt/pdfiumtoppm/pdfiumtoppm /usr/local/bin/pdfiumtoppm
 ```
 
-Linux x86_64 and arm64.
+Linux x86_64 and arm64, Windows x64. The Windows zip holds `pdfiumtoppm.exe`
+with `pdfium.dll` beside it; unzip anywhere and keep them together.
 
 ## libpdfium
 
-Dynamically loaded, not embedded. Search order: `-pdfium <dir>` (must bind),
-then `$PDFIUM_PATH`, the executable's directory, the system library path. On
-failure the error lists every location tried.
+Dynamically loaded, not embedded (`libpdfium.so` on Linux, `pdfium.dll` on
+Windows). Search order: `-pdfium <dir>` (must bind), then `$PDFIUM_PATH`, the
+executable's directory, the system library path. On failure the error lists
+every location tried.
 
 ```sh
-mkdir -p pdfium && curl -sL https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8021/pdfium-linux-x64.tgz | tar xz -C pdfium
+mkdir -p pdfium && curl -sL https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8035/pdfium-linux-x64.tgz | tar xz -C pdfium
 PDFIUM_PATH=pdfium/lib pdfiumtoppm -png -r 300 -scale-to 4096 -gray in.pdf out
 ```
 
-Tested and pinned (CI, release tarball) to
+Tested and pinned (CI, release archives) to
 [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases)
-`chromium/8021`.
+`chromium/8035`.
 
 ## Build
 
@@ -126,7 +131,8 @@ cargo test --release                   # sizing and page-range logic; no libpdfi
 PDFIUM_PATH=pdfium/lib tests/smoke.sh  # end to end
 ```
 
-Tags `v*` publish `pdfiumtoppm-<tag>-linux-{x64,arm64}.tar.gz`.
+Tags `v*` publish `pdfiumtoppm-<tag>-linux-{x64,arm64}.tar.gz` and
+`pdfiumtoppm-<tag>-win-x64.zip`.
 
 ## Comparing with pdftoppm
 
@@ -173,5 +179,5 @@ README. Thank you to all of them.
 
 ## License
 
-Apache-2.0. Release tarballs also ship `libpdfium.so` (BSD-3-Clause plus its
-bundled third-party licenses, under `licenses/`).
+Apache-2.0. Release archives also ship the pdfium library (BSD-3-Clause plus
+its bundled third-party licenses, under `licenses/`).

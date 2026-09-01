@@ -16,6 +16,15 @@ limitations under the License.
 
 # Changes
 
+## 0.2.0
+
+- Windows x64 release zip (`pdfiumtoppm.exe` plus `pdfium.dll`).
+- `-max-memory` now works on Windows via a Job Object commit limit, on by
+  default as on Unix. The crash exit-code guess stays Unix-only: a page over
+  the limit is skipped with exit 4, but a crash inside PDFium exits with the
+  OS status.
+- pdfium-binaries `chromium/8035` (PDFium 154.0.8035.0).
+
 ## 0.1.2
 
 - PNG output carries a pHYs chunk with the effective DPI, as `pdftoppm`'s

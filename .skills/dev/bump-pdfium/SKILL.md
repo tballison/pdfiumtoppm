@@ -23,11 +23,11 @@ description: Move to a new pdfium-binaries release (and, if needed, pdfium-rende
 
 1. Pick the release tag at https://github.com/bblanchon/pdfium-binaries/releases
    (`chromium/NNNN`). Check pdfium-render's changelog for a matching minimum.
-2. Download `pdfium-linux-x64.tgz` and `pdfium-linux-arm64.tgz` for that tag;
-   record each `sha256sum`.
+2. Download `pdfium-linux-x64.tgz`, `pdfium-linux-arm64.tgz`, and
+   `pdfium-win-x64.tgz` for that tag; record each `sha256sum`.
 3. Update, all together:
-   - `.github/workflows/ci.yml` and `release.yml`: `PDFIUM_RELEASE` and both
-     matrix `sha256` values.
+   - `.github/workflows/ci.yml` and `release.yml`: `PDFIUM_RELEASE` and all
+     three matrix `sha256` values.
    - `README.md` "libpdfium": the pinned version and the curl URL.
    - `CHANGES.md`: new pdfium version (and `VERSION` file's MAJOR.MINOR.BUILD).
    - `Cargo.toml` pins if pdfium-render or image change; run `cargo update -p`.

@@ -14,7 +14,7 @@
 
 [package]
 name = "pdfiumtoppm"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -28,6 +28,15 @@ png = "=0.18.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.189"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+] }
 
 [profile.release]
 lto = true

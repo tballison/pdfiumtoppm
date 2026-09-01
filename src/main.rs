@@ -41,21 +41,22 @@ Usage: pdfiumtoppm [options] <PDF-file> <image-root>
   -scale-to <int>    : scales each page to fit within scale-to*scale-to pixel box
   -max-pages <int>   : render at most this many pages
   -max-pixels <int>  : downscale any page whose width*height would exceed this
-  -max-memory <int>  : address-space limit in MiB (setrlimit RLIMIT_AS); exit 4 if hit
-                       (default: 4096 or half of RAM, whichever is lower; 0 disables;
-                       a crash far below the limit exits 99 instead)
+  -max-memory <int>  : memory limit in MiB (RLIMIT_AS on Unix, a Job Object on
+                       Windows); exit 4 if hit (default: 4096 or half of RAM,
+                       whichever is lower; 0 disables; on Unix a crash far below
+                       the limit exits 99 instead)
   -png               : generate a PNG file (default is PPM)
   -png-compress <int>: PNG zlib level 0-9 (default 1; pdftoppm uses 6)
   -gray              : generate a grayscale image file
   -opw <string>      : owner password (for encrypted files)
   -upw <string>      : user password (for encrypted files)
-  -pdfium <path>     : directory containing libpdfium.so
+  -pdfium <path>     : directory containing the pdfium library
   -v                 : print version info
   -h                 : print usage information
 Environment:
-  PDFIUM_PATH        : directory containing libpdfium.so
-libpdfium.so is searched in: -pdfium, $PDFIUM_PATH, the executable's directory,
-then the system library path.";
+  PDFIUM_PATH        : directory containing the pdfium library
+The pdfium library (libpdfium.so / pdfium.dll) is searched in: -pdfium,
+$PDFIUM_PATH, the executable's directory, then the system library path.";
 
 struct Opts {
     first: Option<u32>,
@@ -213,20 +214,65 @@ fn bind_pdfium(explicit: Option<&Path>) -> Pdfium {
         Ok(b) => Pdfium::new(b),
         Err(e) => {
             errors.push(format!("  system library: {e:?}"));
-            eprintln!("Error: could not load libpdfium:\n{}", errors.join("\n"));
+            eprintln!(
+                "Error: could not load the pdfium library:\n{}",
+                errors.join("\n")
+            );
             exit(EXIT_OTHER);
         }
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn limit_memory(_mib: u64) {
-    usage_err("-max-memory is only supported on Unix");
+    usage_err("-max-memory is not supported on this platform");
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn physical_memory() -> Option<u64> {
     None
+}
+
+#[cfg(windows)]
+fn physical_memory() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut st: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    st.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    // SAFETY: st is a properly sized struct with dwLength set
+    (unsafe { GlobalMemoryStatusEx(&mut st) } != 0).then_some(st.ullTotalPhys)
+}
+
+// Job Object commit limit; no crash-code guess as on Unix: if PDFium itself
+// dies mid-page the process exits with the OS status, not 4
+#[cfg(windows)]
+fn limit_memory(mib: u64) {
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_JOB_MEMORY,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    // SAFETY: plain Win32 calls on valid arguments; the job handle lives as long as the process
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_JOB_MEMORY;
+        info.JobMemoryLimit = mib.saturating_mul(1 << 20) as usize;
+        if job.is_null()
+            || SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) == 0
+            || AssignProcessToJobObject(job, GetCurrentProcess()) == 0
+        {
+            eprintln!(
+                "Error: -max-memory {mib}: {}",
+                std::io::Error::last_os_error()
+            );
+            exit(EXIT_OTHER);
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -248,7 +294,7 @@ fn resolve_max_memory(flag: Option<u64>, phys: Option<u64>) -> Option<u64> {
     match flag {
         Some(0) => None,
         Some(m) => Some(m),
-        None if cfg!(unix) => Some(phys.map_or(DEFAULT_MAX_MEMORY_MIB, |b| {
+        None if cfg!(any(unix, windows)) => Some(phys.map_or(DEFAULT_MAX_MEMORY_MIB, |b| {
             DEFAULT_MAX_MEMORY_MIB.min(b >> 21).max(1)
         })),
         None => None,
@@ -738,7 +784,7 @@ mod tests {
         const G: u64 = 1 << 30;
         assert_eq!(resolve_max_memory(Some(0), Some(32 * G)), None);
         assert_eq!(resolve_max_memory(Some(512), Some(32 * G)), Some(512));
-        if cfg!(unix) {
+        if cfg!(any(unix, windows)) {
             assert_eq!(resolve_max_memory(None, Some(32 * G)), Some(4096));
             assert_eq!(resolve_max_memory(None, Some(4 * G)), Some(2048));
             assert_eq!(resolve_max_memory(None, Some(1)), Some(1));

@@ -15,7 +15,7 @@
 name: ci
 on: [push, pull_request]
 env:
-  PDFIUM_RELEASE: chromium/8021
+  PDFIUM_RELEASE: chromium/8035
 jobs:
   build:
     strategy:
@@ -23,11 +23,20 @@ jobs:
         include:
           - os: ubuntu-latest
             pdfium: linux-x64
-            sha256: 685f7930cd184ea22cd77afe707c1cf53b173d18118b6e16cb213c9277d7cdc3
+            libdir: lib
+            sha256: 2e6db042dd2cff2d5247023dbec6c7ebb800042ce83c835d6468d45229669bd4
           - os: ubuntu-24.04-arm
             pdfium: linux-arm64
-            sha256: 8da7615b210986a5b7187e3246ef0c315995583c68af6765b070d5dbb156ede6
+            libdir: lib
+            sha256: 10bb7728a5268593a31c2024e0e57ea26b73b7a54195054f43d2ad0869d55a48
+          - os: windows-latest
+            pdfium: win-x64
+            libdir: bin
+            sha256: 61513d611ad200a383456140739be77d156f1e3a2eef22bd89f6c3bda79bdd41
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
@@ -42,4 +51,4 @@ jobs:
           curl -sfL "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE}/pdfium-${{ matrix.pdfium }}.tgz" -o pdfium.tgz
           echo "${{ matrix.sha256 }}  pdfium.tgz" | sha256sum -c
           mkdir -p pdfium && tar xzf pdfium.tgz -C pdfium
-      - run: PDFIUM_PATH=pdfium/lib tests/smoke.sh
+      - run: PDFIUM_PATH=pdfium/${{ matrix.libdir }} tests/smoke.sh
