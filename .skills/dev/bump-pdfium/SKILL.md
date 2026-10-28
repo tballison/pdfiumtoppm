@@ -23,14 +23,16 @@ description: Move to a new pdfium-binaries release (and, if needed, pdfium-rende
 
 1. Pick the release tag at https://github.com/bblanchon/pdfium-binaries/releases
    (`chromium/NNNN`). Check pdfium-render's changelog for a matching minimum.
-2. Download `pdfium-linux-x64.tgz`, `pdfium-linux-arm64.tgz`, and
-   `pdfium-win-x64.tgz` for that tag; record each `sha256sum`.
+2. Download `pdfium-linux-x64.tgz`, `pdfium-linux-arm64.tgz`,
+   `pdfium-mac-arm64.tgz`, and `pdfium-win-x64.tgz` for that tag; record each
+   SHA-256.
 3. Update, all together:
    - `.github/workflows/ci.yml` and `release.yml`: `PDFIUM_RELEASE` and all
-     three matrix `sha256` values.
+     four matrix `sha256` values.
    - `README.md` "libpdfium": the pinned version and the curl URL.
    - `CHANGES.md`: new pdfium version (and `VERSION` file's MAJOR.MINOR.BUILD).
    - `Cargo.toml` pins if pdfium-render or image change; run `cargo update -p`.
-4. Extract the x64 tarball locally and run `PDFIUM_PATH=<dir>/lib tests/smoke.sh`.
+4. Extract the archive for the local platform and run
+   `PDFIUM_PATH=<dir>/lib tests/smoke.sh`.
 5. Run `tests/compare.py` against a corpus sample if rendering behavior may
    have changed; update `docs/pdftoppm-comparison.md` only if numbers moved.

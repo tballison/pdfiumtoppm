@@ -30,14 +30,14 @@ and tag back to the human — never commit, tag, or push.
    missing**, so an empty-notes release is not possible.
 3. Run the full check from `AGENTS.md`, including `tests/smoke.sh`.
 4. Hand back the commit; the human tags `v<version>` and pushes the tag.
-   Both `ci` and `release` must be green on all three platforms
-   (linux-x64, linux-arm64, win-x64).
+   Both `ci` and `release` must be green on all four platforms
+   (linux-x64, linux-arm64, mac-arm64, win-x64).
 5. Verify the published release cold, as a downloader meets it: checksums
    verify, the archive holds the binary next to its pdfium library, and the
    extracted binary renders a page with `PDFIUM_PATH` unset.
 
 Automated by `release.yml`: notes from `CHANGES.md`, the tag/`Cargo.toml`
-version guard, all three platform builds, smoke on each, packaging
-(`.tar.gz` on Linux, `.zip` on Windows), checksums, and upload.
+version guard, all four platform builds, smoke on each, packaging
+(`.tar.gz` on Linux, `.zip` on macOS/Windows), checksums, and upload.
 Dependabot covers cargo and github-actions monthly; pdfium pins are not
 automated (see the `bump-pdfium` skill).
