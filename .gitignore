@@ -23,3 +23,8 @@ target
 # local pdfium checkout and compare.py output
 pdfium/
 compare.csv
+compare-pages.csv
+lowpages/
+
+# python bytecode from tests/compare.py
+__pycache__/
