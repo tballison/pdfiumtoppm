@@ -19,13 +19,17 @@ limitations under the License.
 ## 0.2.1
 
 - macOS arm64 release zip (`pdfiumtoppm` plus `libpdfium.dylib`).
+- The pdfium library next to the executable is found through a symlink to
+  it (macOS `current_exe()` does not resolve symlinks).
 - CI and release smoke coverage on the GitHub-hosted macOS 15 arm64 runner.
-- `-max-memory` is disabled by default and rejected when explicitly enabled
-  on macOS, where `setrlimit(RLIMIT_AS)` returns `EINVAL`. Render untrusted
+- `-max-memory` is now Linux and Windows only: elsewhere it is disabled by
+  default and rejected when explicitly enabled (on macOS
+  `setrlimit(RLIMIT_AS)` returns `EINVAL`). Render untrusted
   PDFs in isolated subprocesses with an external memory limit on macOS.
 - The README recommends a constrained local Linux arm64 Docker container for
   untrusted PDFs on macOS and provides a cgroup-backed example.
 - pdfium-binaries `chromium/8125` (PDFium 158.0.8125.0).
+- CI checks the declared minimum Rust version (1.88).
 - pdfium-render 0.9.4, libc 0.2.191, and current compatible transitive
   dependencies.
 

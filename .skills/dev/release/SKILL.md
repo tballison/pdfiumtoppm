@@ -25,6 +25,8 @@ Tagging is the trigger; everything after it is `release.yml`. Hand the commit
 and tag back to the human — never commit, tag, or push.
 
 1. `Cargo.toml`: bump `version`. Run a build so `Cargo.lock` follows.
+   Update the hardcoded version in `README.md` (Install, `xattr`, and the
+   macOS Docker example).
 2. `CHANGES.md`: add a `## <version>` section. The release job extracts this
    section verbatim for the GitHub release notes and **fails if it is
    missing**, so an empty-notes release is not possible.

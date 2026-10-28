@@ -27,7 +27,7 @@ Independent project; not affiliated with Google, PDFium, pdfium-binaries, or pdf
 
 ## Status
 
-Early (0.1.0). Written in a morning, largely by an AI agent under human
+Early. 0.1.0 was written in a morning, largely by an AI agent under human
 direction and review, then checked against 100 Common Crawl PDFs (see
 [docs/pdftoppm-comparison.md](docs/pdftoppm-comparison.md)). Expect rough
 edges; bug reports with a sample PDF are welcome.
@@ -66,8 +66,8 @@ hit.
 input. `-scale-to` matches `pdftoppm`, including enlarging; `-max-pixels`
 only ever downscales. `-max-memory` sets `RLIMIT_AS` on Linux and a Job Object
 commit limit on Windows before the pdfium library is loaded. It is not
-supported on macOS because macOS rejects `RLIMIT_AS`; the option is off by
-default there and an explicit nonzero value is rejected. On supported
+supported elsewhere (macOS rejects `RLIMIT_AS`); there the option is off by
+default and an explicit nonzero value is rejected. On supported
 platforms it defaults to 4096 MiB or half of physical RAM, whichever is
 lower; `-max-memory 0` turns it off. A page that would not fit is skipped with a message and the run
 exits 4 after the remaining pages. If the process instead dies mid-page from
@@ -86,8 +86,9 @@ baseline (a 4096x4096 render, ~130 MiB more); that is a floor, not a
 budget. Page content can demand any amount regardless of output size (a
 5 KB PDF has been seen to take 18 GB and the machine with it), so the
 default limit exists for untrusted input; raise it if a legitimate page
-needs more. On macOS, or with `-max-memory 0`, the kernel's out-of-memory
-killer is the only backstop.
+needs more. Without a limit (`-max-memory 0`, or always on macOS) the only
+backstop is the OS: Linux's out-of-memory killer ends the process; macOS has
+no such killer and compresses and swaps until the whole system stalls.
 
 A page that fails to render is reported and skipped; exit stays 0 unless no
 page rendered (99).
@@ -102,15 +103,21 @@ Release archives contain `pdfiumtoppm` and a matching pdfium library; keep
 them together:
 
 ```sh
-tar xzf pdfiumtoppm-v0.2.0-linux-x64.tar.gz
-sudo mv pdfiumtoppm-v0.2.0-linux-x64 /opt/pdfiumtoppm
+tar xzf pdfiumtoppm-v0.2.1-linux-x64.tar.gz
+sudo mv pdfiumtoppm-v0.2.1-linux-x64 /opt/pdfiumtoppm
 sudo ln -s /opt/pdfiumtoppm/pdfiumtoppm /usr/local/bin/pdfiumtoppm
 ```
 
 Linux x86_64 and arm64, macOS arm64, and Windows x64. The macOS zip holds
 `pdfiumtoppm` with `libpdfium.dylib` beside it. The Windows zip holds
 `pdfiumtoppm.exe` with `pdfium.dll` beside it; extract either archive anywhere
-and keep its two binaries together.
+and keep its two binaries together. The macOS binaries are not notarized:
+after a browser download, clear the quarantine flag before the first run, or
+Gatekeeper blocks both files:
+
+```sh
+xattr -dr com.apple.quarantine pdfiumtoppm-v0.2.1-mac-arm64
+```
 
 ### macOS and untrusted PDFs
 
