@@ -18,7 +18,10 @@ limitations under the License.
 
 `tests/compare.py <pdf-dir> [-n N] [--flags "..."]` runs both tools (pdftoppm
 with `-cropbox`) and reports exit codes, page counts, dimensions, wall time,
-and per-page similarity (needs Pillow + numpy). No corpus PDFs ship here.
+and per-page similarity. Needs Pillow + numpy; SciPy adds the `ssim`
+column. Per-page detail goes to `compare-pages.csv`; `--keep-below SIM`
+copies both renders of any page scoring under SIM for inspection. No corpus
+PDFs ship here.
 
 A good source is Digital Corpora's
 [CC-MAIN-2021-31-PDF-UNTRUNCATED](https://digitalcorpora.org/corpora/file-corpora/cc-main-2021-31-pdf-untruncated/):
@@ -33,108 +36,87 @@ PDFIUM_PATH=pdfium/lib tests/compare.py pdfs -n 100
 
 Bucket listing: `https://digitalcorpora.s3.amazonaws.com/?prefix=corpora/files/CC-MAIN-2021-31-PDF-UNTRUNCATED/zipfiles/`.
 
-## Experiment 1: first 3 pages of 100 files
+## Current measurement (2026-09-01)
 
-First 100 files of `0000.zip`, first 3 pages, Poppler 24.02 vs pdfiumtoppm
-0.1.1 (pdfium `chromium/8021`, pdfium-render 0.9.3, image 0.25.10), one
-Linux x86_64 box: no exit-code or page-count differences; 3 files with the
-1-pixel A4 size difference described below; no channel-swapped pages;
-RGB similarity median 0.97 (72 DPI) to 0.99 (300 DPI), min 0.91 (all low
-cases: non-embedded font substitution). Total wall time:
+Experiment 3, numbered to follow the two in
+[pdftoppm-comparison-2026-08.md](pdftoppm-comparison-2026-08.md).
 
-| flags         | pdfiumtoppm | pdftoppm | notes |
-|---------------|-------------|----------|-------|
-| `-r 72` PPM   |  4.6 s |   8.8 s | |
-| `-r 72 -png`  |  5.4 s |  32.5 s | |
-| `-r 300` PPM  | 23.2 s |  49.7 s | equal medians; worst file 1.6 s vs 13.2 s |
-| `-r 300 -png` | 30.1 s | 293.2 s | |
+Files `0000000.pdf`-`0000999.pdf` of `0000.zip`, first 3 pages (2,232
+pages), color `-r 72 -png`, Poppler 24.02 vs pdfiumtoppm 0.2.0 (pdfium
+`chromium/8035`, pdfium-render 0.9.3, image 0.25.10, png 0.18.1), one Linux
+x86_64 laptop (i7-1260P). No exit-code, page-count, dimension, or
+channel-swap differences on any of the 1,000 files.
 
-Rendering is ~2x faster with a shorter tail. The PNG rows mostly measure
-encoding, where the two tools make different choices: `pdftoppm` spends time
-to produce smaller files; this tool defaults to fast, larger output and
-leaves the trade-off to `-png-compress`. One 300 DPI scanned page:
+Similarity is reported per page; a page is the unit that gets rendered.
+The per-file view takes each file's worst page, which is both pessimistic
+and sensitive to how many pages per file the sample happens to have, so the
+two are not interchangeable:
 
-| encoder | time | size |
+| | per page (2,232) | per file (1,000) |
 |---|---|---|
-| `-png-compress 1` (default) | 0.6 s | 8.2 MB |
-| `-png-compress 6` | 1.5 s | 5.6 MB |
-| `-png-compress 9` | 4.4 s | 5.5 MB |
-| pdftoppm | 10.0 s | 5.5 MB |
+| median | 0.9765 | 0.9718 |
+| mean | 0.9742 | - |
+| min | 0.8509 | 0.8509 |
+| below 0.90 | 4 pages | 3 files |
 
-For tesseract, fast PNG beats PPM: raw PPM/PGM is ~10x the bytes and
-carries no DPI, so tesseract must be told the resolution explicitly or it
-may mis-segment tables. Measured in an OCR pipeline, PGM output was ~3%
-slower end to end than `-png-compress 1` - the larger files cost more in
-I/O and decode than the fast PNG encode saves.
+Wall time, whole run: 55.8 s vs 302.4 s; per file median 0.036 s vs
+0.226 s, max 0.82 s vs 4.83 s.
+
+Experiment 1 (archived) is the same flags on the first 100 files and
+reports median 0.97, min 0.91 as a per-file figure. The median is unchanged at ten times
+the sample; only the tail is longer, part of it from taking a minimum over
+2.2x more pages.
+
+The four pages below 0.90 fall in `0000527` (0.8509), `0000750` (0.8807)
+and `0000908` (0.8978); the next files down are `0000877`, `0000365`,
+`0000316`. Inspected by eye, all are the same font-rasterization
+difference: identical text, identical line breaks, ghosting on every glyph
+edge. The score tracks text density rather than severity - the worst page
+is a dense small-type statistical table, where far more pixels sit on a
+glyph edge (15.8% differing strongly, against ~10% on a typical text page).
+
+Rendering under `chromium/8021` and `chromium/8035` was byte-identical on
+these files (max channel difference 0 on every page), so the earlier
+experiments' quality figures still stand at 8035.
+
+## Behavior notes
 
 Expect occasional 1-pixel size differences where `pt * dpi / 72` is an exact
-integer (A4 at 300 DPI: 2482 vs 2483). `pdftoppm` also reports syntax
-problems it finds in damaged files; this tool is silent unless a page fails.
+integer (A4 at 300 DPI: 2482 vs 2483); at 72 DPI the scale is exactly 1 and
+none appear. `pdftoppm` also reports syntax problems it finds in damaged
+files; this tool is silent unless a page fails.
 
-## Experiment 2: every page of all 1,000 files
+## Limits of the metrics
 
-Same corpus source, files `0000000.pdf`-`0000999.pdf` of `0000.zip` (16,248
-pages), every page of every document in one invocation per tool, gray
-200 DPI, 4 concurrent workers, Poppler 24.02 vs pdfiumtoppm 0.1.2, one
-Linux x86_64 laptop (i7-1260P). This experiment measured both speed
-(rasterization and PNG encoding separately) and output quality (per-page
-RGB similarity). Both tools opened the same 996 files and failed the same
-4 (one encrypted, three truncated).
+`sim` is `1 - mean|diff|/255`: it catches page-scale damage (missing images,
+wrong rotation, walls of .notdef boxes), not a single wrong word; it
+measures agreement between the two tools, not correctness where both make
+the same mistake; and structured-but-small differences score high - a full
+red/blue channel swap only drops it to ~0.96, which is why the harness also
+runs an explicit swapped-channel check. `ssim` (Wang et al. 2004, gaussian
+11x11, validated against scikit-image) spreads the tail far wider - pages
+clustered at 0.85-0.92 under `sim` separate across 0.5-0.85 - but it is
+not simply the better metric. Being a local-contrast measure, it
+over-penalizes dark and low-contrast photographic content: the corpus's
+worst `ssim` page (0.49) is a near-black product photo the two tools render
+indistinguishably, with 0.8% of pixels differing strongly. Median ink rises
+monotonically as `ssim` falls (0.11 at `ssim` >= 0.9, 0.28 below 0.6), so on
+a scan-heavy corpus `ssim` alone flags mostly images. `ink_delta`, the gap in
+non-white pixel fraction, catches content one tool did not draw, which a
+page-wide mean dilutes to nothing on a mostly white page; it is the only one
+of the three that flags a hairline-pattern difference `sim` scores above its
+own median.
 
-### Speed
+Use them together: among the 20 worst pages by each metric, `ssim` and `sim`
+share 6, `ssim` and `ink_delta` share 4, `sim` and `ink_delta` share 6. Each
+surfaces a substantially different set, and none of the three is a
+sufficient detector on its own. Pages a tool timed out on are excluded from
+comparison.
 
-Raw PGM output isolates rasterization: no encoder runs, and since PGM
-size is determined by page dimensions alone, both tools wrote the same
-58.9 GB output volume (the pixel contents are not identical - see the
-output-quality section below):
+## Earlier measurements
 
-| pages/file | pdfiumtoppm (ms/page) | pdftoppm (ms/page) | ratio |
-|---|---|---|---|
-| 1 | 100 ms | 151 ms | 1.5x |
-| 4-10 | 41 ms | 66 ms | 1.6x |
-| 101+ | 26 ms | 54 ms | 2.1x |
-| total (all 16,248 pages) | 546 s | 995 s | 1.8x |
-
-As rasterizers the two are close. Re-running
-against Poppler 26.08 built from source (same corpus, same machine, same
-run for both tools) gives the same picture: rasterization ratio 1.65x
-(1.4x single-page to 1.8x on 100+ pages), and 26.08 measured no faster
-than 24.02 here. The end-to-end gap is PNG encoding: `pdftoppm` has no
-compression-effort option (still true in 26.08), while
-this tool defaults to fast (`-png-compress 1`). PNG output at default
-settings on the same corpus: 762 s vs 7,446 s, with 11 large documents
-hitting a 120-second per-document cap that neither tool hits in PGM mode.
-With `-png-compress 6` for comparable encoder effort:
-
-| pages/file | pdfiumtoppm (ms/page) | pdftoppm (ms/page) | ratio |
-|---|---|---|---|
-| 1 | 164 ms | 989 ms | 6.0x |
-| 4-10 | 83 ms | 597 ms | 7.2x |
-| 101+ | 57 ms | 482 ms | 8.5x |
-| total (991 files, 13,130 pages) | 931 s | 6,932 s | 7.4x |
-
-(The page total is lower than the PGM table's because files that timed out
-in either tool's PNG mode are excluded from the pairwise comparison.)
-
-With matched encoder effort (`-png-compress 6`) against 26.08 in the same
-run, PDF-to-PNG is 7.1x (1,089 s vs 7,712 s over the files both completed),
-with the same handful of large documents hitting the per-document cap.
-
-### Output quality (RGB similarity)
-
-A separate color pass (200 DPI, RGB PNG) compared every rendered page of
-the two tools pixel-by-pixel: mean RGB similarity 0.984 (same
-1 - mean|diff|/255 metric as Experiment 1), identical page counts, zero
-pages that score better with red/blue channels swapped, and no geometry
-differences beyond the 1-pixel rounding noted above. The visible
-differences are ordinary font-substitution choices on pages with
-non-embedded fonts.
-
-Limits of the metric: a page-wide mean catches page-scale damage (missing
-images, wrong rotation, walls of .notdef boxes), not a single wrong word;
-it measures agreement between the two tools, not correctness where both
-make the same mistake; and structured-but-small differences score high -
-a full red/blue channel swap only drops it to ~0.96, which is why the
-harness also runs an explicit swapped-channel check. The low tail
-(0.86-0.93) is dominated by legitimate font substitution and was inspected
-by eye. Pages a tool timed out on are excluded from comparison.
+Experiments 1 and 2 (August 2026, pdfiumtoppm 0.1.1/0.1.2, pdfium
+`chromium/8021`) are in
+[pdftoppm-comparison-2026-08.md](pdftoppm-comparison-2026-08.md). They
+remain the source for the speed breakdown - rasterization ~1.8x, PDF-to-PNG
+~7.4x at matched encoder effort - and for the `-png-compress` trade-off.
