@@ -14,7 +14,7 @@
 
 [package]
 name = "pdfiumtoppm"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -27,7 +27,7 @@ image = { version = "=0.25.10", default-features = false, features = ["pnm"] }
 png = "=0.18.1"
 
 [target.'cfg(unix)'.dependencies]
-libc = "=0.2.189"
+libc = "=0.2.191"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
