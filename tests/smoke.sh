@@ -59,7 +59,8 @@ p_pages=("$W"/p-*.ppm)
 "$B" -r 72 -max-memory 0 -f 1 -l 1 "$T/twelve.pdf" "$W/mem0" || fail "-max-memory 0 should disable the limit"
 if [ "$(uname -s)" = Darwin ]; then
   "$B" -max-memory 64 "$T/twelve.pdf" "$W/mem" 2>"$W/mem.err" && rc=0 || rc=$?
-  [ "$rc" = 99 ] && grep -q "not supported on macOS" "$W/mem.err" || fail "-max-memory should be rejected on macOS (rc $rc)"
+  [ "$rc" = 99 ] && grep -q "not supported on macos" "$W/mem.err" || fail "-max-memory should be rejected on macOS (rc $rc)"
+  "$B" -r 72 -f 1 -l 1 "$T/twelve.pdf" "$W/memn" 2>"$W/memn.err" || fail "default run should apply no memory limit on macOS: $(head -1 "$W/memn.err")"
 else
   "$B" -r 72 -max-memory 64 -f 1 -l 1 "$T/twelve.pdf" "$W/mem" || fail "64 MiB should suffice for a small page"
   "$B" -r 300 "$T/huge.pdf" "$W/memd" 2>"$W/memd.err" && rc=0 || rc=$?
