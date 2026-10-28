@@ -28,7 +28,7 @@ Independent project; not affiliated with Google, PDFium, pdfium-binaries, or pdf
 ## Status
 
 Early (0.1.0). Written in a morning, largely by an AI agent under human
-direction and review, then checked against 100 Common Crawl PDFs (see
+direction and review, then checked against 1,000 Common Crawl PDFs (see
 [docs/pdftoppm-comparison.md](docs/pdftoppm-comparison.md)). Expect rough
 edges; bug reports with a sample PDF are welcome.
 
