@@ -53,10 +53,11 @@ jobs:
       - name: fetch pdfium
         run: |
           curl -sfL "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE}/pdfium-${{ matrix.pdfium }}.tgz" -o pdfium.tgz
-          if command -v sha256sum >/dev/null; then
-            echo "${{ matrix.sha256 }}  pdfium.tgz" | sha256sum -c
-          else
+          # macOS sha256sum is BSD's and cannot -c from stdin
+          if [ "${RUNNER_OS}" = macOS ]; then
             echo "${{ matrix.sha256 }}  pdfium.tgz" | shasum -a 256 -c
+          else
+            echo "${{ matrix.sha256 }}  pdfium.tgz" | sha256sum -c
           fi
           mkdir -p pdfium && tar xzf pdfium.tgz -C pdfium
       - run: PDFIUM_PATH=pdfium/${{ matrix.libdir }} tests/smoke.sh
