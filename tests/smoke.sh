@@ -12,16 +12,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# needs PDFIUM_PATH -> dir containing libpdfium.so
+# needs PDFIUM_PATH -> dir containing the platform pdfium library
 set -euo pipefail
+export LC_ALL=C
 B=${1:-target/release/pdfiumtoppm}
 T=$(dirname "$0")
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
+file_size() {
+  stat -c %s "$1" 2>/dev/null || stat -f %z "$1"
+}
 
 "$B" -png -r 300 -scale-to 4096 -gray -f 1 -l 1 "$T/twelve.pdf" "$W/t"
 [ -f "$W/t-01.png" ] || fail "expected t-01.png"
-head -c 8 "$W/t-01.png" | grep -q PNG || fail "not a PNG"
+[ "$(od -An -tx1 -N 8 "$W/t-01.png" | tr -d ' \n')" = 89504e470d0a1a0a ] || fail "not a PNG"
 
 # pHYs: 300 dpi = 11811 px/m = 0x00002e23, twice, unit 1
 "$B" -png -r 300 -f 1 -l 1 "$T/twelve.pdf" "$W/phys"
@@ -32,14 +36,15 @@ od -An -tx1 -v "$W/phys72-1.png" | tr -d ' \n' | grep -q '7048597300000b1300000b
 
 "$B" -png -png-compress 9 -f 1 -l 1 "$T/twelve.pdf" "$W/c9"
 "$B" -png -png-compress 0 -f 1 -l 1 "$T/twelve.pdf" "$W/c0"
-[ "$(stat -c %s "$W/c9-01.png")" -lt "$(stat -c %s "$W/c0-01.png")" ] || fail "png-compress 9 should be smaller than 0"
+[ "$(file_size "$W/c9-01.png")" -lt "$(file_size "$W/c0-01.png")" ] || fail "png-compress 9 should be smaller than 0"
 for bad in "-png-compress 10" "-png-compress -1" "-png-compress x"; do
   "$B" $bad "$T/twelve.pdf" "$W/x" 2>/dev/null && rc=0 || rc=$?
   [ "$rc" = 99 ] || fail "'$bad' should exit 99 (got $rc)"
 done
 
 "$B" -r 72 "$T/twelve.pdf" "$W/p"
-[ "$(ls "$W"/p-*.ppm | wc -l)" = 12 ] || fail "expected 12 ppm files"
+p_pages=("$W"/p-*.ppm)
+[ "${#p_pages[@]}" = 12 ] || fail "expected 12 ppm files"
 [ "$(head -c 2 "$W/p-01.ppm")" = P6 ] || fail "expected P6"
 
 "$B" -r 72 -gray "$T/twelve.pdf" "$W/g"
@@ -51,13 +56,18 @@ done
 "$B" -r 300 -max-pixels 4000000 "$T/huge.pdf" "$W/h" 2>/dev/null
 [ "$(head -c 20 "$W/h-1.ppm" | sed -n 2p)" = "2000 2000 255" ] || fail "max-pixels"
 
-"$B" -r 72 -max-memory 64 -f 1 -l 1 "$T/twelve.pdf" "$W/mem" || fail "64 MiB should suffice for a small page"
 "$B" -r 72 -max-memory 0 -f 1 -l 1 "$T/twelve.pdf" "$W/mem0" || fail "-max-memory 0 should disable the limit"
-"$B" -r 300 "$T/huge.pdf" "$W/memd" 2>"$W/memd.err" && rc=0 || rc=$?
-[ "$rc" = 4 ] && grep -q "over -max-memory" "$W/memd.err" || fail "default -max-memory should catch the huge page (rc $rc)"
-"$B" -r 300 -max-memory 256 "$T/huge.pdf" "$W/memh" 2>"$W/memh.err" && rc=0 || rc=$?
-[ "$rc" = 4 ] && [ ! -f "$W/memh-1.ppm" ] && grep -q "over -max-memory" "$W/memh.err" || fail "over -max-memory should skip the page and exit 4 (rc $rc)"
-"$B" -r 300 -max-memory 256 -max-pixels 4000000 "$T/huge.pdf" "$W/memp" 2>/dev/null || fail "-max-pixels should keep huge page under -max-memory"
+if [ "$(uname -s)" = Darwin ]; then
+  "$B" -max-memory 64 "$T/twelve.pdf" "$W/mem" 2>"$W/mem.err" && rc=0 || rc=$?
+  [ "$rc" = 99 ] && grep -q "not supported on macOS" "$W/mem.err" || fail "-max-memory should be rejected on macOS (rc $rc)"
+else
+  "$B" -r 72 -max-memory 64 -f 1 -l 1 "$T/twelve.pdf" "$W/mem" || fail "64 MiB should suffice for a small page"
+  "$B" -r 300 "$T/huge.pdf" "$W/memd" 2>"$W/memd.err" && rc=0 || rc=$?
+  [ "$rc" = 4 ] && grep -q "over -max-memory" "$W/memd.err" || fail "default -max-memory should catch the huge page (rc $rc)"
+  "$B" -r 300 -max-memory 256 "$T/huge.pdf" "$W/memh" 2>"$W/memh.err" && rc=0 || rc=$?
+  [ "$rc" = 4 ] && [ ! -f "$W/memh-1.ppm" ] && grep -q "over -max-memory" "$W/memh.err" || fail "over -max-memory should skip the page and exit 4 (rc $rc)"
+  "$B" -r 300 -max-memory 256 -max-pixels 4000000 "$T/huge.pdf" "$W/memp" 2>/dev/null || fail "-max-pixels should keep huge page under -max-memory"
+fi
 
 "$B" -r 72 "$T/degenerate.pdf" "$W/d" 2>/dev/null && rc=0 || rc=$?
 [ "$rc" = 0 ] || fail "bad page should not fail the run (exit $rc)"

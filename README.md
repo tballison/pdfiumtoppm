@@ -43,7 +43,8 @@ pdfiumtoppm [options] <PDF-file> <image-root>
   -max-pages <int>    render at most this many pages (after -f/-l)
   -max-pixels <int>   downscale any page whose width*height exceeds this
   -max-memory <int>   memory limit in MiB; exit 4 if any page hits it
-                      (default 4096 or half of RAM, whichever is lower; 0 = none)
+                      (Linux/Windows only; default 4096 or half of RAM,
+                      whichever is lower; 0 = none)
   -png                write PNG (default binary PPM/PGM)
   -png-compress <int> PNG zlib level 0-9 (default 1; pdftoppm uses 6)
   -gray               grayscale
@@ -63,10 +64,12 @@ hit.
 
 `-max-pages`, `-max-pixels`, and `-max-memory` are additions for untrusted
 input. `-scale-to` matches `pdftoppm`, including enlarging; `-max-pixels`
-only ever downscales. `-max-memory` sets `RLIMIT_AS` on Unix, and a Job Object
-commit limit on Windows, before the pdfium library is
-loaded. Unlike `pdftoppm`, it is on by default: 4096 MiB or half of physical
-RAM, whichever is lower; `-max-memory 0` turns it off. A page that would not fit is skipped with a message and the run
+only ever downscales. `-max-memory` sets `RLIMIT_AS` on Linux and a Job Object
+commit limit on Windows before the pdfium library is loaded. It is not
+supported on macOS because macOS rejects `RLIMIT_AS`; the option is off by
+default there and an explicit nonzero value is rejected. On supported
+platforms it defaults to 4096 MiB or half of physical RAM, whichever is
+lower; `-max-memory 0` turns it off. A page that would not fit is skipped with a message and the run
 exits 4 after the remaining pages. If the process instead dies mid-page from
 a fatal signal (an allocation failure inside PDFium ends that way), the exit
 code is a guess: 4 when the address space was within a third of the limit,
@@ -76,14 +79,14 @@ and any output file being written at that moment may be truncated. Rust
 prints `fatal runtime error: Rust cannot catch foreign exceptions, aborting`
 just before that message when PDFium's allocation failure surfaces as a C++
 exception; that line is expected. Without `-max-memory` no signal is caught;
-a crash is a crash. The crash-code guess is Unix-only: on Windows a page over
+a crash is a crash. The crash-code guess is Linux-only: on Windows a page over
 the limit is still skipped with exit 4, but if PDFium itself dies mid-page the
 process exits with the OS status instead. The bitmap alone needs about 8 bytes per output pixel on top of a ~64 MiB
 baseline (a 4096x4096 render, ~130 MiB more); that is a floor, not a
 budget. Page content can demand any amount regardless of output size (a
 5 KB PDF has been seen to take 18 GB and the machine with it), so the
 default limit exists for untrusted input; raise it if a legitimate page
-needs more, and know that with `-max-memory 0` the kernel's out-of-memory
+needs more. On macOS, or with `-max-memory 0`, the kernel's out-of-memory
 killer is the only backstop.
 
 A page that fails to render is reported and skipped; exit stays 0 unless no
@@ -104,24 +107,69 @@ sudo mv pdfiumtoppm-v0.2.0-linux-x64 /opt/pdfiumtoppm
 sudo ln -s /opt/pdfiumtoppm/pdfiumtoppm /usr/local/bin/pdfiumtoppm
 ```
 
-Linux x86_64 and arm64, Windows x64. The Windows zip holds `pdfiumtoppm.exe`
-with `pdfium.dll` beside it; unzip anywhere and keep them together.
+Linux x86_64 and arm64, macOS arm64, and Windows x64. The macOS zip holds
+`pdfiumtoppm` with `libpdfium.dylib` beside it. The Windows zip holds
+`pdfiumtoppm.exe` with `pdfium.dll` beside it; extract either archive anywhere
+and keep its two binaries together.
+
+### macOS and untrusted PDFs
+
+The native macOS binary cannot enforce `-max-memory`: macOS rejects finite
+`RLIMIT_AS` values, and its other documented process policies do not provide a
+dependable hard memory cap. A small PDF can make PDFium allocate many
+gigabytes, independently of output dimensions. `-max-pixels` and a timeout are
+useful but are not substitutes for a memory boundary.
+
+Do not render untrusted or bulk-corpus PDFs with the native macOS binary. Run
+the Linux arm64 release in a local Docker container so Linux `RLIMIT_AS` and a
+cgroup protect the Mac. For example, download and verify the Linux arm64
+release, extract it into an otherwise empty directory, and add this
+`Dockerfile` beside the extracted directory:
+
+```dockerfile
+FROM ubuntu:24.04
+COPY pdfiumtoppm-v0.2.1-linux-arm64 /opt/pdfiumtoppm
+ENTRYPOINT ["/opt/pdfiumtoppm/pdfiumtoppm"]
+```
+
+Build and run it locally:
+
+```sh
+docker build --platform linux/arm64 -t pdfiumtoppm:0.2.1 .
+mkdir -p input output
+docker run --rm --platform linux/arm64 \
+  --memory=3g --memory-swap=3g --pids-limit=64 \
+  --network=none --read-only --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  -v "$PWD/input:/input:ro" -v "$PWD/output:/output" \
+  pdfiumtoppm:0.2.1 \
+  -max-memory 2048 -max-pixels 12000000 -png \
+  /input/document.pdf /output/page
+```
+
+`-max-memory 2048` is the primary, per-process Linux address-space limit. The
+3 GiB cgroup is a separate hard backstop if PDFium crashes through that path.
+Setting `--memory-swap` equal to `--memory` prevents additional swap allowance.
+The input mount is read-only, output is the only writable host mount, and the
+container has no network or Linux capabilities. Docker Desktop's local Linux
+VM must have at least 3 GiB available. Adjust both limits deliberately for
+legitimate large documents; never remove both limits for untrusted input.
 
 ## libpdfium
 
-Dynamically loaded, not embedded (`libpdfium.so` on Linux, `pdfium.dll` on
-Windows). Search order: `-pdfium <dir>` (must bind), then `$PDFIUM_PATH`, the
-executable's directory, the system library path. On failure the error lists
-every location tried.
+Dynamically loaded, not embedded (`libpdfium.so` on Linux,
+`libpdfium.dylib` on macOS, `pdfium.dll` on Windows). Search order:
+`-pdfium <dir>` (must bind), then `$PDFIUM_PATH`, the executable's directory,
+the system library path. On failure the error lists every location tried.
 
 ```sh
-mkdir -p pdfium && curl -sL https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8035/pdfium-linux-x64.tgz | tar xz -C pdfium
+mkdir -p pdfium && curl -sL https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8125/pdfium-linux-x64.tgz | tar xz -C pdfium
 PDFIUM_PATH=pdfium/lib pdfiumtoppm -png -r 300 -scale-to 4096 -gray in.pdf out
 ```
 
 Tested and pinned (CI, release archives) to
 [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases)
-`chromium/8035`.
+`chromium/8125`.
 
 ## Build
 
@@ -132,7 +180,7 @@ PDFIUM_PATH=pdfium/lib tests/smoke.sh  # end to end
 ```
 
 Tags `v*` publish `pdfiumtoppm-<tag>-linux-{x64,arm64}.tar.gz` and
-`pdfiumtoppm-<tag>-win-x64.zip`.
+`pdfiumtoppm-<tag>-{mac-arm64,win-x64}.zip`.
 
 ## Comparing with pdftoppm
 

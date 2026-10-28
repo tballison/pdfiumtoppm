@@ -17,7 +17,7 @@
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::exit;
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::fs::File;
@@ -41,10 +41,10 @@ Usage: pdfiumtoppm [options] <PDF-file> <image-root>
   -scale-to <int>    : scales each page to fit within scale-to*scale-to pixel box
   -max-pages <int>   : render at most this many pages
   -max-pixels <int>  : downscale any page whose width*height would exceed this
-  -max-memory <int>  : memory limit in MiB (RLIMIT_AS on Unix, a Job Object on
-                       Windows); exit 4 if hit (default: 4096 or half of RAM,
-                       whichever is lower; 0 disables; on Unix a crash far below
-                       the limit exits 99 instead)
+  -max-memory <int>  : memory limit in MiB (RLIMIT_AS on Linux, a Job Object on
+                       Windows; unsupported on macOS); exit 4 if hit (default:
+                       4096 or half of RAM, whichever is lower; 0 disables; on
+                       Linux a crash far below the limit exits 99 instead)
   -png               : generate a PNG file (default is PPM)
   -png-compress <int>: PNG zlib level 0-9 (default 1; pdftoppm uses 6)
   -gray              : generate a grayscale image file
@@ -55,8 +55,9 @@ Usage: pdfiumtoppm [options] <PDF-file> <image-root>
   -h                 : print usage information
 Environment:
   PDFIUM_PATH        : directory containing the pdfium library
-The pdfium library (libpdfium.so / pdfium.dll) is searched in: -pdfium,
-$PDFIUM_PATH, the executable's directory, then the system library path.";
+The pdfium library (libpdfium.so / libpdfium.dylib / pdfium.dll) is searched
+in: -pdfium, $PDFIUM_PATH, the executable's directory, then the system
+library path.";
 
 struct Opts {
     first: Option<u32>,
@@ -233,6 +234,11 @@ fn physical_memory() -> Option<u64> {
     None
 }
 
+#[cfg(target_os = "macos")]
+fn limit_memory(_mib: u64) {
+    usage_err("-max-memory is not supported on macOS");
+}
+
 #[cfg(windows)]
 fn physical_memory() -> Option<u64> {
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
@@ -294,20 +300,22 @@ fn resolve_max_memory(flag: Option<u64>, phys: Option<u64>) -> Option<u64> {
     match flag {
         Some(0) => None,
         Some(m) => Some(m),
-        None if cfg!(any(unix, windows)) => Some(phys.map_or(DEFAULT_MAX_MEMORY_MIB, |b| {
-            DEFAULT_MAX_MEMORY_MIB.min(b >> 21).max(1)
-        })),
+        None if cfg!(any(windows, all(unix, not(target_os = "macos")))) => {
+            Some(phys.map_or(DEFAULT_MAX_MEMORY_MIB, |b| {
+                DEFAULT_MAX_MEMORY_MIB.min(b >> 21).max(1)
+            }))
+        }
         None => None,
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 static MEM_LIMIT: AtomicU64 = AtomicU64::new(0);
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 static PAGE_SIZE: AtomicU64 = AtomicU64::new(0);
 
 // VmSize from /proc/self/statm; only async-signal-safe calls, no allocation
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 unsafe fn vm_size() -> Option<u64> {
     let fd = libc::open(c"/proc/self/statm".as_ptr(), libc::O_RDONLY);
     if fd < 0 {
@@ -329,7 +337,7 @@ unsafe fn vm_size() -> Option<u64> {
     any.then(|| pages * PAGE_SIZE.load(Ordering::Relaxed))
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 extern "C" fn on_fatal_signal(sig: libc::c_int) {
     let name: &[u8] = match sig {
         libc::SIGABRT => b"SIGABRT",
@@ -363,7 +371,7 @@ extern "C" fn on_fatal_signal(sig: libc::c_int) {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn limit_memory(mib: u64) {
     let bytes = mib.saturating_mul(1 << 20);
     MEM_LIMIT.store(bytes, Ordering::Relaxed);
@@ -784,11 +792,13 @@ mod tests {
         const G: u64 = 1 << 30;
         assert_eq!(resolve_max_memory(Some(0), Some(32 * G)), None);
         assert_eq!(resolve_max_memory(Some(512), Some(32 * G)), Some(512));
-        if cfg!(any(unix, windows)) {
+        if cfg!(any(windows, all(unix, not(target_os = "macos")))) {
             assert_eq!(resolve_max_memory(None, Some(32 * G)), Some(4096));
             assert_eq!(resolve_max_memory(None, Some(4 * G)), Some(2048));
             assert_eq!(resolve_max_memory(None, Some(1)), Some(1));
             assert_eq!(resolve_max_memory(None, None), Some(4096));
+        } else {
+            assert_eq!(resolve_max_memory(None, Some(32 * G)), None);
         }
     }
 
