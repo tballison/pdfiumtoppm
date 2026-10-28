@@ -22,7 +22,7 @@ description = "pdftoppm-style PDF page renderer built on PDFium"
 repository = "https://github.com/tballison/pdfiumtoppm"
 
 [dependencies]
-pdfium-render = "=0.9.3"
+pdfium-render = "=0.9.4"
 image = { version = "=0.25.10", default-features = false, features = ["pnm"] }
 png = "=0.18.1"
 
