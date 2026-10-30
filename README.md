@@ -52,6 +52,7 @@ pdfiumtoppm [options] <PDF-file> [<image-root>]
   -jpegopt <string>   quality=0-100 (default 75), progressive=y|n,
                       optimize=y|n; comma-separated
   -gray               grayscale
+  -cropbox            crop box rather than media box (always on; accepted)
   -singlefile         write only the first page, as <image-root>.<ext>
   -strict             exit 99 if any page failed to render
   -opw <string>       owner password
@@ -118,9 +119,13 @@ a one-component grayscale JPEG where `pdftoppm` writes three components, and
 than `-png` winning or a message with exit 0. JPEG is limited to 65535 pixels
 per side; a larger page fails like any other bad page.
 
-Not supported: `-cropbox`, `-x/-y/-W/-H`, `-jpegcmyk`, `-tiff`, `-mono`,
-`-aa*`, `-hide-annotations`, `-sep`, PDF from stdin. Pages are sized from the crop
-box (PDFium); `pdftoppm` defaults to the media box.
+Not supported: `-x/-y/-W/-H`, `-jpegcmyk`, `-tiff`, `-mono`, `-aa*`,
+`-hide-annotations`, `-sep`, PDF from stdin.
+
+Pages are always sized and rendered from the crop box (PDFium), as
+`pdftoppm -cropbox` does; `-cropbox` is accepted so `pdftoppm` command lines
+work unchanged. Without it, `pdftoppm` uses the media box, so output differs
+for pages whose crop box is smaller.
 
 ## Install
 

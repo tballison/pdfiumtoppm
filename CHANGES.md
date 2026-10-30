@@ -20,6 +20,7 @@ limitations under the License.
 
 - `-jpeg` and `-jpegopt quality=,progressive=,optimize=`, as `pdftoppm`.
 - `-strict`: exit 99 if any page failed to render.
+- `-cropbox` is accepted; it was already the behavior.
 - `-singlefile`, and output to stdout when `<image-root>` is omitted, as
   `pdftoppm`.
 - README states that output files are numbered by PDF page number.

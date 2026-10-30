@@ -51,6 +51,7 @@ Usage: pdfiumtoppm [options] <PDF-file> [<image-root>]
   -jpegopt <string>  : jpeg options, with format <opt1>=<val1>[,<optN>=<valN>]*
                        (quality=0-100, default 75; progressive=y|n; optimize=y|n)
   -gray              : generate a grayscale image file
+  -cropbox           : use the crop box rather than media box (always on here)
   -singlefile        : write only the first page and do not add digits
   -strict            : exit 99 if any page failed to render
   -opw <string>      : owner password (for encrypted files)
@@ -182,6 +183,8 @@ fn parse_args() -> Opts {
             "-gray" => gray = true,
             "-strict" => strict = true,
             "-singlefile" => singlefile = true,
+            // pdfium always renders the crop box
+            "-cropbox" => {}
             "-opw" => opw = Some(value(&mut args, "-opw")),
             "-upw" => upw = Some(value(&mut args, "-upw")),
             "-pdfium" => pdfium_dir = Some(PathBuf::from(value(&mut args, "-pdfium"))),

@@ -123,6 +123,13 @@ done
 "$B" -pdfium /nonexistent -f 1 -l 1 "$T/twelve.pdf" "$W/x" 2>/dev/null && rc=0 || rc=$?
 [ "$rc" = 99 ] || fail "explicit bad -pdfium should not fall back (got $rc)"
 
+# media box 200x100 red|blue, crop box the blue half: 100x100 blue either way
+for f in "" -cropbox; do
+  "$B" -r 72 $f "$T/cropbox.pdf" "$W/cb$f"
+  [ "$(head -c 20 "$W/cb$f-1.ppm" | sed -n 2p)" = "100 100 255" ] || fail "crop box size ($f)"
+  [ "$(od -An -tx1 -j 15 -N 3 "$W/cb$f-1.ppm" | tr -d ' ')" = 0000ff ] || fail "crop box content ($f)"
+done
+
 # real content: rendered page must not be blank (bytes other than 0xff beyond the header)
 "$B" -r 72 "$T/tika-testPDF.pdf" "$W/txt"
 [ "$(tr -d '\377' < "$W/txt-1.ppm" | wc -c)" -gt 1000 ] || fail "text page rendered blank"
