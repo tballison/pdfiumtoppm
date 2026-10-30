@@ -36,7 +36,7 @@ edges; bug reports with a sample PDF are welcome.
 ## Options
 
 ```
-pdfiumtoppm [options] <PDF-file> <image-root>
+pdfiumtoppm [options] <PDF-file> [<image-root>]
   -f <int>            first page
   -l <int>            last page
   -r <fp>             DPI (default 150)
@@ -52,6 +52,7 @@ pdfiumtoppm [options] <PDF-file> <image-root>
   -jpegopt <string>   quality=0-100 (default 75), progressive=y|n,
                       optimize=y|n; comma-separated
   -gray               grayscale
+  -singlefile         write only the first page, as <image-root>.<ext>
   -strict             exit 99 if any page failed to render
   -opw <string>       owner password
   -upw <string>       user password
@@ -64,6 +65,11 @@ Output: `<image-root>-<N>.<ext>`, where `N` is the PDF page number
 zero-padded to the width of the document's page count, as in `pdftoppm`:
 `-f 101 -l 200` on a 250-page PDF writes `out-101` through `out-200`, and
 `-f 3` on a 12-page PDF starts at `out-03`.
+With `-singlefile`, only the first page of the range is written, as
+`<image-root>.<ext>`. Without `<image-root>`, images go to stdout one after
+another, as in `pdftoppm` (a root of `-` is a file prefix, not stdout). A page
+that fails is missing from the stream; use `-strict` to make that an error.
+Stdout is not atomic: a crash can leave a partial image in the stream.
 Each page is written to `<file>.part` and renamed into place when complete, so
 an output file that exists is never truncated, even after a crash or a full
 disk. PNGs carry a pHYs chunk and JPEGs a JFIF density with the effective DPI, as
@@ -112,8 +118,8 @@ a one-component grayscale JPEG where `pdftoppm` writes three components, and
 than `-png` winning or a message with exit 0. JPEG is limited to 65535 pixels
 per side; a larger page fails like any other bad page.
 
-Not supported: `-cropbox`, `-x/-y/-W/-H`, `-singlefile`, `-jpegcmyk`, `-tiff`,
-`-mono`, `-aa*`, `-hide-annotations`, stdout. Pages are sized from the crop
+Not supported: `-cropbox`, `-x/-y/-W/-H`, `-jpegcmyk`, `-tiff`, `-mono`,
+`-aa*`, `-hide-annotations`, `-sep`, PDF from stdin. Pages are sized from the crop
 box (PDFium); `pdftoppm` defaults to the media box.
 
 ## Install

@@ -20,6 +20,8 @@ limitations under the License.
 
 - `-jpeg` and `-jpegopt quality=,progressive=,optimize=`, as `pdftoppm`.
 - `-strict`: exit 99 if any page failed to render.
+- `-singlefile`, and output to stdout when `<image-root>` is omitted, as
+  `pdftoppm`.
 - README states that output files are numbered by PDF page number.
 - Pages are written to `<file>.part` and renamed when complete; a crash or
   write error no longer leaves a truncated page file. A write error in the

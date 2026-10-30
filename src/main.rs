@@ -34,7 +34,7 @@ const EXIT_MEMORY: i32 = 4; // ours: -max-memory was hit
 const EXIT_OTHER: i32 = 99;
 
 const USAGE: &str = "\
-Usage: pdfiumtoppm [options] <PDF-file> <image-root>
+Usage: pdfiumtoppm [options] <PDF-file> [<image-root>]
   -f <int>           : first page to print
   -l <int>           : last page to print
   -r <fp>            : resolution, in DPI (default is 150)
@@ -51,6 +51,7 @@ Usage: pdfiumtoppm [options] <PDF-file> <image-root>
   -jpegopt <string>  : jpeg options, with format <opt1>=<val1>[,<optN>=<valN>]*
                        (quality=0-100, default 75; progressive=y|n; optimize=y|n)
   -gray              : generate a grayscale image file
+  -singlefile        : write only the first page and do not add digits
   -strict            : exit 99 if any page failed to render
   -opw <string>      : owner password (for encrypted files)
   -upw <string>      : user password (for encrypted files)
@@ -61,7 +62,8 @@ Environment:
   PDFIUM_PATH        : directory containing the pdfium library
 The pdfium library (libpdfium.so / libpdfium.dylib / pdfium.dll) is searched
 in: -pdfium, $PDFIUM_PATH, the executable's directory, then the system
-library path.";
+library path.
+Without <image-root>, images are written to stdout.";
 
 struct Opts {
     first: Option<u32>,
@@ -80,7 +82,8 @@ struct Opts {
     upw: Option<String>,
     pdfium_dir: Option<PathBuf>,
     pdf: PathBuf,
-    root: String,
+    root: Option<String>, // None = stdout
+    singlefile: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -142,6 +145,7 @@ fn parse_args() -> Opts {
     let mut jpegopt = None;
     let mut gray = false;
     let mut strict = false;
+    let mut singlefile = false;
     let mut opw = None;
     let mut upw = None;
     let mut pdfium_dir = None;
@@ -177,6 +181,7 @@ fn parse_args() -> Opts {
             "-jpegopt" => jpegopt = Some(value(&mut args, "-jpegopt")),
             "-gray" => gray = true,
             "-strict" => strict = true,
+            "-singlefile" => singlefile = true,
             "-opw" => opw = Some(value(&mut args, "-opw")),
             "-upw" => upw = Some(value(&mut args, "-upw")),
             "-pdfium" => pdfium_dir = Some(PathBuf::from(value(&mut args, "-pdfium"))),
@@ -192,8 +197,8 @@ fn parse_args() -> Opts {
             _ => positional.push(a),
         }
     }
-    if positional.len() != 2 {
-        usage_err("expected <PDF-file> <image-root>");
+    if !(1..=2).contains(&positional.len()) {
+        usage_err("expected <PDF-file> [<image-root>]");
     }
     if !(dpi > 0.0 && dpi.is_finite()) {
         usage_err("-r must be a positive number");
@@ -218,7 +223,7 @@ fn parse_args() -> Opts {
             usage_err(&format!("{flag} must be positive"));
         }
     }
-    let root = positional.pop().unwrap();
+    let root = (positional.len() == 2).then(|| positional.pop().unwrap());
     let pdf = PathBuf::from(positional.pop().unwrap());
     Opts {
         first,
@@ -238,6 +243,7 @@ fn parse_args() -> Opts {
         pdfium_dir,
         pdf,
         root,
+        singlefile,
     }
 }
 
@@ -519,6 +525,15 @@ fn main() {
             exit(EXIT_OTHER);
         }
     };
+    let last = if opts.singlefile && last > first {
+        eprintln!(
+            "Warning: Single file will write only the first of the {} pages.",
+            last - first + 1
+        );
+        first
+    } else {
+        last
+    };
     let ext = match (opts.png, opts.jpeg.is_some(), opts.gray) {
         (true, _, _) => "png",
         (_, true, _) => "jpg",
@@ -529,11 +544,17 @@ fn main() {
     // like pdftoppm: skip bad pages; nonzero exit only if nothing rendered, or -strict
     let (mut failed, mut ok, mut oom) = (0u32, 0u32, 0u32);
     for pg in first..=last {
-        let out = out_name(&opts.root, pg, n_pages, ext);
+        let out = opts
+            .root
+            .as_deref()
+            .map(|r| out_name(r, pg, n_pages, ext, opts.singlefile));
         match render_page(&doc, pg, &opts) {
             Ok((img, dpi)) => {
-                if let Err(e) = write_image(&img, dpi, &out, &opts) {
-                    eprintln!("Error: could not write {out}: {e}");
+                if let Err(e) = write_image(&img, dpi, out.as_deref(), &opts) {
+                    eprintln!(
+                        "Error: could not write {}: {e}",
+                        out.as_deref().unwrap_or("stdout")
+                    );
                     exit(EXIT_OPEN_OUTPUT);
                 }
                 ok += 1;
@@ -583,7 +604,10 @@ fn probe(bytes: usize) -> Result<Vec<u8>, PageError> {
 }
 
 // like pdftoppm: N is the PDF page number, zero-padded to the page count's width
-fn out_name(root: &str, pg: u32, n_pages: u32, ext: &str) -> String {
+fn out_name(root: &str, pg: u32, n_pages: u32, ext: &str, singlefile: bool) -> String {
+    if singlefile {
+        return format!("{root}.{ext}");
+    }
     let pad = n_pages.to_string().len();
     format!("{root}-{pg:0pad$}.{ext}")
 }
@@ -701,9 +725,15 @@ fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<(DynamicImage,
 fn write_image(
     img: &DynamicImage,
     dpi: f32,
-    out: &str,
+    out: Option<&str>,
     opts: &Opts,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(out) = out else {
+        let mut w = BufWriter::new(std::io::stdout().lock());
+        encode(img, dpi, &mut w, opts)?;
+        w.flush()?;
+        return Ok(());
+    };
     let part = format!("{out}.part");
     let res = (|| -> Result<(), Box<dyn std::error::Error>> {
         let mut w = BufWriter::new(File::create(&part)?);
@@ -815,7 +845,8 @@ mod tests {
             upw: None,
             pdfium_dir: None,
             pdf: PathBuf::new(),
-            root: String::new(),
+            root: None,
+            singlefile: false,
         }
     }
 
@@ -842,10 +873,11 @@ mod tests {
 
     #[test]
     fn out_name_uses_page_number_and_page_count_width() {
-        assert_eq!(out_name("p", 3, 12, "ppm"), "p-03.ppm");
-        assert_eq!(out_name("p", 101, 250, "jpg"), "p-101.jpg");
-        assert_eq!(out_name("p", 1, 9, "png"), "p-1.png");
-        assert_eq!(out_name("p", 7, 1000, "png"), "p-0007.png");
+        assert_eq!(out_name("p", 3, 12, "ppm", false), "p-03.ppm");
+        assert_eq!(out_name("p", 101, 250, "jpg", false), "p-101.jpg");
+        assert_eq!(out_name("p", 1, 9, "png", false), "p-1.png");
+        assert_eq!(out_name("p", 7, 1000, "png", false), "p-0007.png");
+        assert_eq!(out_name("p", 7, 1000, "png", true), "p.png");
     }
 
     #[test]

@@ -59,6 +59,17 @@ done
 "$B" -jpegopt quality=50 -r 72 -f 1 -l 1 "$T/twelve.pdf" "$W/jo" 2>"$W/jo.err" || fail "-jpegopt without -jpeg should only warn"
 grep -q "only valid with jpeg" "$W/jo.err" && [ -f "$W/jo-01.ppm" ] || fail "-jpegopt without -jpeg should warn and write ppm"
 
+"$B" -singlefile -png -r 72 -f 3 -l 5 "$T/twelve.pdf" "$W/sf" 2>"$W/sf.err"
+[ "$(ls "$W"/sf*.png)" = "$W/sf.png" ] || fail "-singlefile should write only sf.png"
+grep -q "only the first of the 3 pages" "$W/sf.err" || fail "-singlefile should warn about the dropped pages"
+"$B" -singlefile -png -r 72 -f 3 "$T/twelve.pdf" > "$W/sf-stdout.png" 2>/dev/null
+cmp -s "$W/sf.png" "$W/sf-stdout.png" || fail "stdout should match the -singlefile file"
+"$B" -r 72 -f 1 -l 2 "$T/twelve.pdf" > "$W/two.ppm"
+"$B" -r 72 -f 1 -l 2 "$T/twelve.pdf" "$W/p2"
+cat "$W/p2-01.ppm" "$W/p2-02.ppm" | cmp -s - "$W/two.ppm" || fail "stdout should concatenate pages"
+BA="$(cd "$(dirname "$B")" && pwd)/$(basename "$B")"; TA="$(cd "$T" && pwd)"
+(cd "$W" && "$BA" -r 72 -f 1 -l 1 "$TA/twelve.pdf" -) && [ -f "$W/--01.ppm" ] || fail "root '-' is a file prefix, as in pdftoppm"
+
 "$B" -r 72 "$T/twelve.pdf" "$W/p"
 ls "$W"/*.part >/dev/null 2>&1 && fail "no .part file should remain after success"
 # rename onto a directory fails: exit 2, temp removed
