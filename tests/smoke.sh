@@ -162,7 +162,8 @@ done
 # channel order: top half red, bottom half blue (72 dpi -> 100x100, header "P6\n100 100\n255\n" = 15 bytes)
 "$B" -r 72 "$T/redblue.pdf" "$W/rb"
 # pdftoppm's header layout: maxval on its own line
-[ "$(head -c 15 "$W/rb-1.ppm" | od -An -c | tr -s ' ' | tr -d '\n')" = " P 6 \n 1 0 0 1 0 0 \n 2 5 5 \n" ] || fail "PPM header should match pdftoppm"
+# "P6\n100 100\n255\n"
+[ "$(od -An -tx1 -N 15 "$W/rb-1.ppm" | tr -d ' \n')" = 50360a313030203130300a3235350a ] || fail "PPM header should match pdftoppm"
 [ "$(od -An -tx1 -j 15 -N 3 "$W/rb-1.ppm" | tr -d ' ')" = ff0000 ] || fail "top pixel should be red"
 [ "$(od -An -tx1 -j $((15 + 99*300)) -N 3 "$W/rb-1.ppm" | tr -d ' ')" = 0000ff ] || fail "bottom pixel should be blue"
 "$B" -r 72 -gray "$T/redblue.pdf" "$W/rbg"
