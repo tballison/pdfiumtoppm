@@ -109,14 +109,16 @@ else
   "$B" -r 300 -max-memory 256 -max-pixels 4000000 "$T/huge.pdf" "$W/memp" 2>/dev/null || fail "-max-pixels should keep huge page under -max-memory"
 fi
 
-# full run takes ~0.4s locally; the limit must hit mid-run, leaving only complete pages
-"$B" -max-time 0.05 -r 1200 -png -max-memory 0 "$T/twelve.pdf" "$W/mt" 2>"$W/mt.err" && rc=0 || rc=$?
-[ "$rc" = 5 ] && grep -q "max-time 0.05s exceeded" "$W/mt.err" || fail "-max-time should exit 5 (rc $rc)"
-ls "$W"/mt-*.part >/dev/null 2>&1 && fail "-max-time should remove the page in progress"
-for f in "$W"/mt-*.png; do
-  [ -e "$f" ] || continue
-  [ "$(tail -c 8 "$f" | od -An -tx1 | tr -d ' \n')" = 49454e44ae426082 ] || fail "$f is not a complete PNG"
-done
+# a reader that never reads stalls page 1's write, so the limit always hits there
+{ "$B" -max-time 1 -r 300 -manifest "$W/mt.jsonl" "$T/twelve.pdf" 2>"$W/mt.err" && rc=0 || rc=$?; echo $rc >"$W/mt.rc"; } | { sleep 3; }
+[ "$(cat "$W/mt.rc")" = 5 ] && grep -q "max-time 1s exceeded during page 1" "$W/mt.err" || fail "-max-time should exit 5 during page 1 (rc $(cat "$W/mt.rc"))"
+[ "$(cat "$W/mt.jsonl")" = '{"page":1,"status":"timeout"}' ] || fail "manifest should record the timed-out page"
+case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) ;; *)
+  # opening a FIFO for writing blocks, stalling page 1 with its .part in place
+  mkfifo "$W/ff-01.ppm.part"
+  "$B" -max-time 1 -r 72 -f 1 -l 1 "$T/twelve.pdf" "$W/ff" 2>/dev/null && rc=0 || rc=$?
+  [ "$rc" = 5 ] && [ ! -e "$W/ff-01.ppm.part" ] && [ ! -e "$W/ff-01.ppm" ] || fail "-max-time should remove the page in progress (rc $rc)"
+esac
 "$B" -max-time 60 -r 72 -f 1 -l 1 "$T/twelve.pdf" "$W/mt60" || fail "-max-time should not fire early"
 for bad in "-max-time 0" "-max-time -1" "-max-time nan" "-max-time x"; do
   "$B" $bad "$T/twelve.pdf" "$W/x" 2>/dev/null && rc=0 || rc=$?
@@ -132,8 +134,6 @@ done
 [ "$(wc -l < "$W/d.jsonl" | tr -d ' ')" = 3 ] || fail "manifest should have a line per page"
 grep -q '^{"page":2,"status":"failed",.*"error":' "$W/d.jsonl" || fail "manifest should record the failed page"
 grep -q "^{\"page\":1,\"status\":\"ok\",.*\"bytes\":$(file_size "$W/dm-1.ppm")," "$W/d.jsonl" || fail "manifest bytes should match the file"
-"$B" -max-time 0.05 -r 1200 -png -max-memory 0 -manifest "$W/mt.jsonl" "$T/twelve.pdf" "$W/mtm" 2>/dev/null && rc=0 || rc=$?
-[ "$rc" = 5 ] && tail -1 "$W/mt.jsonl" | grep -q '"status":"timeout"' || fail "manifest should end with the timed-out page (rc $rc)"
 "$B" -r 72 -strict "$T/degenerate.pdf" "$W/ds" 2>/dev/null && rc=0 || rc=$?
 [ "$rc" = 99 ] || fail "-strict with a bad page should exit 99 (got $rc)"
 [ -f "$W/ds-1.ppm" ] && [ -f "$W/ds-3.ppm" ] || fail "-strict should still render the good pages"
