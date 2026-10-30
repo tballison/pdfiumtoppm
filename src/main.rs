@@ -21,7 +21,7 @@ use std::process::exit;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -58,6 +58,7 @@ Usage: pdfiumtoppm [options] <PDF-file> [<image-root>]
   -gray              : generate a grayscale image file
   -cropbox           : use the crop box rather than media box (always on here)
   -singlefile        : write only the first page and do not add digits
+  -manifest <path>   : write one JSON line per page (status, file, size, dpi, bytes, ms)
   -strict            : exit 99 if any page failed to render
   -opw <string>      : owner password (for encrypted files)
   -upw <string>      : user password (for encrypted files)
@@ -89,6 +90,7 @@ struct Opts {
     upw: Option<String>,
     pdfium_dir: Option<PathBuf>,
     pdf: PathBuf,
+    manifest: Option<PathBuf>,
     root: Option<String>, // None = stdout
     singlefile: bool,
 }
@@ -154,6 +156,7 @@ fn parse_args() -> Opts {
     let mut gray = false;
     let mut strict = false;
     let mut singlefile = false;
+    let mut manifest = None;
     let mut opw = None;
     let mut upw = None;
     let mut pdfium_dir = None;
@@ -191,6 +194,7 @@ fn parse_args() -> Opts {
             "-gray" => gray = true,
             "-strict" => strict = true,
             "-singlefile" => singlefile = true,
+            "-manifest" => manifest = Some(PathBuf::from(value(&mut args, "-manifest"))),
             // pdfium always renders the crop box
             "-cropbox" => {}
             "-opw" => opw = Some(value(&mut args, "-opw")),
@@ -257,6 +261,7 @@ fn parse_args() -> Opts {
         upw,
         pdfium_dir,
         pdf,
+        manifest,
         root,
         singlefile,
     }
@@ -493,6 +498,67 @@ fn limit_memory(mib: u64) {
 
 static CURRENT_PAGE: AtomicU32 = AtomicU32::new(0);
 static CURRENT_PART: Mutex<Option<String>> = Mutex::new(None);
+static MANIFEST: Mutex<Option<File>> = Mutex::new(None);
+
+#[derive(Default)]
+struct PageRecord<'a> {
+    page: u32,
+    status: &'a str,
+    file: Option<&'a str>,
+    // width, height, effective dpi, downscaled by -max-pixels
+    size: Option<(u32, u32, f32, bool)>,
+    bytes: Option<u64>,
+    ms: Option<u128>,
+    error: Option<&'a str>,
+}
+
+fn json_str(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+fn manifest_line(r: &PageRecord) -> String {
+    let mut o = format!("{{\"page\":{},\"status\":{}", r.page, json_str(r.status));
+    if let Some(f) = r.file {
+        o += &format!(",\"file\":{}", json_str(f));
+    }
+    if let Some((w, h, dpi, down)) = r.size {
+        o += &format!(",\"width\":{w},\"height\":{h},\"dpi\":{dpi:.2},\"downscaled\":{down}");
+    }
+    if let Some(b) = r.bytes {
+        o += &format!(",\"bytes\":{b}");
+    }
+    if let Some(ms) = r.ms {
+        o += &format!(",\"ms\":{ms}");
+    }
+    if let Some(e) = r.error {
+        o += &format!(",\"error\":{}", json_str(e));
+    }
+    o + "}\n"
+}
+
+// one write per line, so a killed run leaves only whole records
+fn record(r: &PageRecord) {
+    let mut m = MANIFEST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(f) = m.as_mut() {
+        if let Err(e) = f.write_all(manifest_line(r).as_bytes()) {
+            eprintln!("Error: could not write manifest: {e}");
+            hard_exit(EXIT_OPEN_OUTPUT);
+        }
+    }
+}
 
 // pdfium cannot abort a render, so the only way out of a stuck page is ending the process
 fn start_watchdog(secs: f64) {
@@ -504,7 +570,14 @@ fn start_watchdog(secs: f64) {
         }
         match CURRENT_PAGE.load(Ordering::SeqCst) {
             0 => eprintln!("Error: -max-time {secs}s exceeded before rendering"),
-            pg => eprintln!("Error: -max-time {secs}s exceeded during page {pg}"),
+            pg => {
+                eprintln!("Error: -max-time {secs}s exceeded during page {pg}");
+                record(&PageRecord {
+                    page: pg,
+                    status: "timeout",
+                    ..Default::default()
+                });
+            }
         }
         hard_exit(EXIT_TIME);
     });
@@ -596,6 +669,16 @@ fn main() {
         _ => "ppm",
     };
 
+    if let Some(p) = &opts.manifest {
+        match File::create(p) {
+            Ok(f) => *MANIFEST.lock().unwrap() = Some(f),
+            Err(e) => {
+                eprintln!("Error: could not write {}: {e}", p.display());
+                exit(EXIT_OPEN_OUTPUT);
+            }
+        }
+    }
+
     // like pdftoppm: skip bad pages; nonzero exit only if nothing rendered, or -strict
     let (mut failed, mut ok, mut oom) = (0u32, 0u32, 0u32);
     for pg in first..=last {
@@ -604,29 +687,55 @@ fn main() {
             .root
             .as_deref()
             .map(|r| out_name(r, pg, n_pages, ext, opts.singlefile));
+        let start = Instant::now();
+        let mut rec = PageRecord {
+            page: pg,
+            file: out.as_deref(),
+            ..Default::default()
+        };
+        let mut msg = String::new();
         match render_page(&doc, pg, &opts) {
-            Ok((img, dpi)) => {
-                if let Err(e) = write_image(&img, dpi, out.as_deref(), &opts) {
-                    eprintln!(
-                        "Error: could not write {}: {e}",
-                        out.as_deref().unwrap_or("stdout")
-                    );
-                    exit(EXIT_OPEN_OUTPUT);
+            Ok((img, dpi, downscaled)) => {
+                rec.size = Some((img.width(), img.height(), dpi, downscaled));
+                match write_image(&img, dpi, out.as_deref(), &opts) {
+                    Ok(n) => {
+                        rec.status = "ok";
+                        rec.bytes = Some(n);
+                        ok += 1;
+                    }
+                    Err(e) => {
+                        msg = format!(
+                            "could not write {}: {e}",
+                            out.as_deref().unwrap_or("stdout")
+                        );
+                        eprintln!("Error: {msg}");
+                        rec.status = "failed";
+                        rec.error = Some(&msg);
+                        rec.ms = Some(start.elapsed().as_millis());
+                        record(&rec);
+                        exit(EXIT_OPEN_OUTPUT);
+                    }
                 }
-                ok += 1;
             }
             Err(PageError::Memory(need)) => {
-                eprintln!(
-                    "Error: page {pg}: needs about {} MiB, over -max-memory",
-                    need >> 20
-                );
+                msg = format!("needs about {} MiB, over -max-memory", need >> 20);
+                eprintln!("Error: page {pg}: {msg}");
+                rec.status = "memory";
                 oom += 1;
             }
             Err(PageError::Other(e)) => {
-                eprintln!("Error: page {pg}: {e}");
+                msg = e;
+                eprintln!("Error: page {pg}: {msg}");
+                rec.status = "failed";
                 failed += 1;
             }
         }
+        if rec.status != "ok" {
+            rec.file = None;
+            rec.error = Some(&msg);
+        }
+        rec.ms = Some(start.elapsed().as_millis());
+        record(&rec);
     }
     if oom > 0 {
         eprintln!("Error: {oom} page(s) skipped for -max-memory");
@@ -738,13 +847,17 @@ fn target_size(w: f32, h: f32, opts: &Opts) -> Result<(i32, i32, f32, bool), Str
 }
 
 // the image and its effective DPI
-fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<(DynamicImage, f32), PageError> {
+fn render_page(
+    doc: &PdfDocument,
+    pg: u32,
+    opts: &Opts,
+) -> Result<(DynamicImage, f32, bool), PageError> {
     let page = doc
         .pages()
         .get((pg - 1) as PdfPageIndex)
         .map_err(|e| format!("could not load: {e:?}"))?;
     let (w, h) = (page.width().value, page.height().value);
-    let (w_px, h_px, scale) = match target_size(w, h, opts) {
+    let (w_px, h_px, scale, downscaled) = match target_size(w, h, opts) {
         Ok((wp, hp, scale, downscaled)) => {
             if downscaled {
                 eprintln!(
@@ -752,7 +865,7 @@ fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<(DynamicImage,
                     opts.max_pixels.unwrap()
                 );
             }
-            (wp, hp, scale)
+            (wp, hp, scale, downscaled)
         }
         Err(e) => return Err(e.into()),
     };
@@ -783,30 +896,42 @@ fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<(DynamicImage,
     } else {
         DynamicImage::ImageRgb8(image::RgbImage::from_raw(wu, hu, out).unwrap())
     };
-    Ok((img, scale * 72.0))
+    Ok((img, scale * 72.0, downscaled))
 }
 
-// via <out>.part and rename, so a crash or full disk never leaves a truncated <out>
+struct Counter<W>(W, u64);
+
+impl<W: Write> Write for Counter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.0.write(buf)?;
+        self.1 += n as u64;
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+// via <out>.part and rename, so a crash or full disk never leaves a truncated <out>; returns bytes written
 fn write_image(
     img: &DynamicImage,
     dpi: f32,
     out: Option<&str>,
     opts: &Opts,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<u64, Box<dyn std::error::Error>> {
     let Some(out) = out else {
-        let mut w = BufWriter::new(std::io::stdout().lock());
+        let mut w = BufWriter::new(Counter(std::io::stdout().lock(), 0));
         encode(img, dpi, &mut w, opts)?;
-        w.flush()?;
-        return Ok(());
+        return Ok(w.into_inner().map_err(|e| e.into_error())?.1);
     };
     let part = format!("{out}.part");
     *CURRENT_PART.lock().unwrap() = Some(part.clone());
-    let res = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let mut w = BufWriter::new(File::create(&part)?);
+    let res = (|| -> Result<u64, Box<dyn std::error::Error>> {
+        let mut w = BufWriter::new(Counter(File::create(&part)?, 0));
         encode(img, dpi, &mut w, opts)?;
-        w.into_inner().map_err(|e| e.into_error())?;
+        let n = w.into_inner().map_err(|e| e.into_error())?.1;
         std::fs::rename(&part, out)?;
-        Ok(())
+        Ok(n)
     })();
     if res.is_err() {
         let _ = std::fs::remove_file(&part);
@@ -913,6 +1038,7 @@ mod tests {
             upw: None,
             pdfium_dir: None,
             pdf: PathBuf::new(),
+            manifest: None,
             root: None,
             singlefile: false,
         }
@@ -989,6 +1115,34 @@ mod tests {
         let mut v = px.to_vec();
         bgr_to_rgb_or_gray(&mut v, 2, 2, 8, true);
         assert_eq!(v, [76, 29, 128, 255]);
+    }
+
+    #[test]
+    fn manifest_lines_are_json() {
+        assert_eq!(json_str("a\"b\\c\n\u{1}é"), r#""a\"b\\c\n\u0001é""#);
+        let ok = PageRecord {
+            page: 3,
+            status: "ok",
+            file: Some("out-03.png"),
+            size: Some((1275, 1650, 150.0, false)),
+            bytes: Some(42),
+            ms: Some(7),
+            error: None,
+        };
+        assert_eq!(
+            manifest_line(&ok),
+            "{\"page\":3,\"status\":\"ok\",\"file\":\"out-03.png\",\"width\":1275,\"height\":1650,\"dpi\":150.00,\"downscaled\":false,\"bytes\":42,\"ms\":7}\n"
+        );
+        let bad = PageRecord {
+            page: 2,
+            status: "failed",
+            error: Some("degenerate page size 0x100 pt"),
+            ..Default::default()
+        };
+        assert_eq!(
+            manifest_line(&bad),
+            "{\"page\":2,\"status\":\"failed\",\"error\":\"degenerate page size 0x100 pt\"}\n"
+        );
     }
 
     #[test]

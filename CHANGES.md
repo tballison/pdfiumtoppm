@@ -26,6 +26,8 @@ limitations under the License.
   anti-aliased pixels.
 - `-max-time <seconds>`: wall-clock limit for the run; exit 5 when hit, after
   removing the page in progress.
+- `-manifest <path>`: one JSON line per page with status, file, size,
+  effective DPI, bytes, and time.
 - `-cropbox` is accepted; it was already the behavior.
 - `-singlefile`, and output to stdout when `<image-root>` is omitted, as
   `pdftoppm`.

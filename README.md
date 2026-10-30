@@ -55,6 +55,7 @@ pdfiumtoppm [options] <PDF-file> [<image-root>]
   -gray               grayscale
   -cropbox            crop box rather than media box (always on; accepted)
   -singlefile         write only the first page, as <image-root>.<ext>
+  -manifest <path>    write one JSON line per page (see below)
   -strict             exit 99 if any page failed to render
   -opw <string>       owner password
   -upw <string>       user password
@@ -80,6 +81,23 @@ engines size text from it (tesseract mis-segments tables without it).
 Exit codes as `pdftoppm`: 0 ok, 1 could not open PDF, 2 could not write, 99
 other (including an empty page range); plus, ours, 4 when `-max-memory` was
 hit and 5 when `-max-time` was.
+
+`-manifest <path>` writes one JSON object per line for each page attempted,
+appended and flushed as the page finishes, so a crash or `-max-time` still
+leaves every earlier record:
+
+```
+{"page":1,"status":"ok","file":"out-1.png","width":1275,"height":1650,"dpi":150.00,"downscaled":false,"bytes":10190,"ms":2}
+{"page":2,"status":"failed","ms":0,"error":"degenerate page size 0x100 pt"}
+{"page":3,"status":"timeout"}
+```
+
+`status` is `ok`, `failed`, `memory` (over `-max-memory`), or `timeout` (the
+page in progress when `-max-time` hit). `dpi` is the effective resolution after
+`-scale-to`/`-max-pixels`; `downscaled` says `-max-pixels` shrank the page.
+`file` is absent for stdout. `bytes` and the size fields appear only for `ok`;
+`ms` covers render and encode. Fields may be added; existing ones keep their
+meaning.
 
 `-max-time` bounds the whole run, from start to the last page. PDFium cannot
 abort a page mid-render, so when the limit hits the process ends at once:

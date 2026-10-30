@@ -123,6 +123,12 @@ done
 [ -f "$W/d-1.ppm" ] && [ ! -f "$W/d-2.ppm" ] && [ -f "$W/d-3.ppm" ] || fail "expected pages 1 and 3 only"
 "$B" -r 72 -f 2 -l 2 "$T/degenerate.pdf" "$W/d2" 2>/dev/null && rc=0 || rc=$?
 [ "$rc" = 99 ] || fail "range with no renderable page should exit 99 (got $rc)"
+"$B" -r 72 -manifest "$W/d.jsonl" "$T/degenerate.pdf" "$W/dm" 2>/dev/null
+[ "$(wc -l < "$W/d.jsonl" | tr -d ' ')" = 3 ] || fail "manifest should have a line per page"
+grep -q '^{"page":2,"status":"failed",.*"error":' "$W/d.jsonl" || fail "manifest should record the failed page"
+grep -q "^{\"page\":1,\"status\":\"ok\",.*\"bytes\":$(file_size "$W/dm-1.ppm")," "$W/d.jsonl" || fail "manifest bytes should match the file"
+"$B" -max-time 0.05 -r 1200 -png -max-memory 0 -manifest "$W/mt.jsonl" "$T/twelve.pdf" "$W/mtm" 2>/dev/null && rc=0 || rc=$?
+[ "$rc" = 5 ] && tail -1 "$W/mt.jsonl" | grep -q '"status":"timeout"' || fail "manifest should end with the timed-out page (rc $rc)"
 "$B" -r 72 -strict "$T/degenerate.pdf" "$W/ds" 2>/dev/null && rc=0 || rc=$?
 [ "$rc" = 99 ] || fail "-strict with a bad page should exit 99 (got $rc)"
 [ -f "$W/ds-1.ppm" ] && [ -f "$W/ds-3.ppm" ] || fail "-strict should still render the good pages"
