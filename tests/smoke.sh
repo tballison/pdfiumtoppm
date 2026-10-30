@@ -93,7 +93,7 @@ p_pages=("$W"/p-*.ppm)
 [ "$(ls "$W"/m-*.ppm | tr '\n' ' ')" = "$W/m-03.ppm $W/m-04.ppm $W/m-05.ppm $W/m-06.ppm " ] || fail "max-pages"
 
 "$B" -r 300 -max-pixels 4000000 "$T/huge.pdf" "$W/h" 2>/dev/null
-[ "$(head -c 20 "$W/h-1.ppm" | sed -n 2p)" = "2000 2000 255" ] || fail "max-pixels"
+[ "$(head -c 20 "$W/h-1.ppm" | sed -n 2p)" = "2000 2000" ] || fail "max-pixels"
 
 "$B" -r 72 -max-memory 0 -f 1 -l 1 "$T/twelve.pdf" "$W/mem0" || fail "-max-memory 0 should disable the limit"
 if [ "$(uname -s)" = Darwin ]; then
@@ -151,7 +151,7 @@ done
 # media box 200x100 red|blue, crop box the blue half: 100x100 blue either way
 for f in "" -cropbox; do
   "$B" -r 72 $f "$T/cropbox.pdf" "$W/cb$f"
-  [ "$(head -c 20 "$W/cb$f-1.ppm" | sed -n 2p)" = "100 100 255" ] || fail "crop box size ($f)"
+  [ "$(head -c 20 "$W/cb$f-1.ppm" | sed -n 2p)" = "100 100" ] || fail "crop box size ($f)"
   [ "$(od -An -tx1 -j 15 -N 3 "$W/cb$f-1.ppm" | tr -d ' ')" = 0000ff ] || fail "crop box content ($f)"
 done
 
@@ -161,6 +161,8 @@ done
 
 # channel order: top half red, bottom half blue (72 dpi -> 100x100, header "P6\n100 100\n255\n" = 15 bytes)
 "$B" -r 72 "$T/redblue.pdf" "$W/rb"
+# pdftoppm's header layout: maxval on its own line
+[ "$(head -c 15 "$W/rb-1.ppm" | od -An -c | tr -s ' ' | tr -d '\n')" = " P 6 \n 1 0 0 1 0 0 \n 2 5 5 \n" ] || fail "PPM header should match pdftoppm"
 [ "$(od -An -tx1 -j 15 -N 3 "$W/rb-1.ppm" | tr -d ' ')" = ff0000 ] || fail "top pixel should be red"
 [ "$(od -An -tx1 -j $((15 + 99*300)) -N 3 "$W/rb-1.ppm" | tr -d ' ')" = 0000ff ] || fail "bottom pixel should be blue"
 "$B" -r 72 -gray "$T/redblue.pdf" "$W/rbg"
