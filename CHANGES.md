@@ -21,6 +21,9 @@ limitations under the License.
 - `-jpeg` and `-jpegopt quality=,progressive=,optimize=`, as `pdftoppm`.
 - `-strict`: exit 99 if any page failed to render.
 - README states that output files are numbered by PDF page number.
+- Pages are written to `<file>.part` and renamed when complete; a crash or
+  write error no longer leaves a truncated page file. A write error in the
+  final buffer flush or PNG end chunk, previously ignored, now exits 2.
 
 ## 0.2.1
 

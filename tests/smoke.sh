@@ -60,6 +60,12 @@ done
 grep -q "only valid with jpeg" "$W/jo.err" && [ -f "$W/jo-01.ppm" ] || fail "-jpegopt without -jpeg should warn and write ppm"
 
 "$B" -r 72 "$T/twelve.pdf" "$W/p"
+ls "$W"/*.part >/dev/null 2>&1 && fail "no .part file should remain after success"
+# rename onto a directory fails: exit 2, temp removed
+mkdir "$W/blk-01.png"
+"$B" -png -r 72 -f 1 -l 1 "$T/twelve.pdf" "$W/blk" 2>/dev/null && rc=0 || rc=$?
+[ "$rc" = 2 ] || fail "failed rename should exit 2 (got $rc)"
+[ ! -e "$W/blk-01.png.part" ] || fail "failed write should remove its .part"
 p_pages=("$W"/p-*.ppm)
 [ "${#p_pages[@]}" = 12 ] || fail "expected 12 ppm files"
 [ "$(head -c 2 "$W/p-01.ppm")" = P6 ] || fail "expected P6"

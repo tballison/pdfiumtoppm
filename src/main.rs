@@ -21,7 +21,7 @@ use std::process::exit;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 
 use image::codecs::pnm::{PnmEncoder, PnmSubtype, SampleEncoding};
 use image::{DynamicImage, ImageEncoder};
@@ -697,13 +697,33 @@ fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<(DynamicImage,
     Ok((img, scale * 72.0))
 }
 
+// via <out>.part and rename, so a crash or full disk never leaves a truncated <out>
 fn write_image(
     img: &DynamicImage,
     dpi: f32,
     out: &str,
     opts: &Opts,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let w = BufWriter::new(File::create(out)?);
+    let part = format!("{out}.part");
+    let res = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let mut w = BufWriter::new(File::create(&part)?);
+        encode(img, dpi, &mut w, opts)?;
+        w.into_inner().map_err(|e| e.into_error())?;
+        std::fs::rename(&part, out)?;
+        Ok(())
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    res
+}
+
+fn encode(
+    img: &DynamicImage,
+    dpi: f32,
+    w: impl Write,
+    opts: &Opts,
+) -> Result<(), Box<dyn std::error::Error>> {
     if opts.png {
         let mut enc = png::Encoder::new(w, img.width(), img.height());
         enc.set_color(if img.color().has_color() {
@@ -726,7 +746,10 @@ fn write_image(
             yppu: ppm,
             unit: png::Unit::Meter,
         }));
-        enc.write_header()?.write_image_data(img.as_bytes())?;
+        let mut wr = enc.write_header()?;
+        wr.write_image_data(img.as_bytes())?;
+        // drop would write IEND but swallow its error
+        wr.finish()?;
         return Ok(());
     }
     if let Some(j) = &opts.jpeg {

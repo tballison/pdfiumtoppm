@@ -64,7 +64,9 @@ Output: `<image-root>-<N>.<ext>`, where `N` is the PDF page number
 zero-padded to the width of the document's page count, as in `pdftoppm`:
 `-f 101 -l 200` on a 250-page PDF writes `out-101` through `out-200`, and
 `-f 3` on a 12-page PDF starts at `out-03`.
-PNGs carry a pHYs chunk and JPEGs a JFIF density with the effective DPI, as
+Each page is written to `<file>.part` and renamed into place when complete, so
+an output file that exists is never truncated, even after a crash or a full
+disk. PNGs carry a pHYs chunk and JPEGs a JFIF density with the effective DPI, as
 `pdftoppm`'s do; OCR
 engines size text from it (tesseract mis-segments tables without it).
 Exit codes as `pdftoppm`: 0 ok, 1 could not open PDF, 2 could not write, 99
@@ -84,7 +86,7 @@ a fatal signal (an allocation failure inside PDFium ends that way), the exit
 code is a guess: 4 when the address space was within a third of the limit,
 99 when it was well under, since a crash that far from the limit is more
 likely a PDFium bug than memory. Either way the message names the signal,
-and any output file being written at that moment may be truncated. Rust
+and a `<file>.part` for the page being written may be left behind. Rust
 prints `fatal runtime error: Rust cannot catch foreign exceptions, aborting`
 just before that message when PDFium's allocation failure surfaces as a C++
 exception; that line is expected. Without `-max-memory` no signal is caught;
