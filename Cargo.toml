@@ -14,7 +14,7 @@
 
 [package]
 name = "pdfiumtoppm"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -23,7 +23,7 @@ repository = "https://github.com/tballison/pdfiumtoppm"
 
 [dependencies]
 pdfium-render = "=0.9.4"
-image = { version = "=0.25.10", default-features = false, features = ["pnm"] }
+image = { version = "=0.25.10", default-features = false }
 png = "=0.18.1"
 jpeg-encoder = { version = "=0.7.1", default-features = false, features = ["std", "simd"] }
 

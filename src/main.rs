@@ -26,8 +26,7 @@ use std::time::{Duration, Instant};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-use image::codecs::pnm::{PnmEncoder, PnmSubtype, SampleEncoding};
-use image::{DynamicImage, ImageEncoder};
+use image::DynamicImage;
 use pdfium_render::prelude::*;
 
 // exit codes mirror pdftoppm
@@ -760,6 +759,11 @@ impl From<String> for PageError {
     }
 }
 
+// binary P6/P5 with pdftoppm's exact header layout; maxval on its own line
+fn pnm_header(color: bool, w: u32, h: u32) -> String {
+    format!("P{}\n{w} {h}\n255\n", if color { 6 } else { 5 })
+}
+
 // in place, dropping row padding: each output byte lands at or before its source
 fn bgr_to_rgb_or_gray(buf: &mut Vec<u8>, w: usize, h: usize, stride: usize, gray: bool) {
     let mut o = 0;
@@ -943,7 +947,7 @@ fn write_image(
 fn encode(
     img: &DynamicImage,
     dpi: f32,
-    w: impl Write,
+    mut w: impl Write,
     opts: &Opts,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if opts.png {
@@ -1000,18 +1004,8 @@ fn encode(
         enc.encode(img.as_bytes(), wu, hu, color)?;
         return Ok(());
     }
-    // binary P6/P5 like pdftoppm; image's default is PAM (P7)
-    let subtype = if img.color().has_color() {
-        PnmSubtype::Pixmap(SampleEncoding::Binary)
-    } else {
-        PnmSubtype::Graymap(SampleEncoding::Binary)
-    };
-    PnmEncoder::new(w).with_subtype(subtype).write_image(
-        img.as_bytes(),
-        img.width(),
-        img.height(),
-        img.color().into(),
-    )?;
+    w.write_all(pnm_header(img.color().has_color(), img.width(), img.height()).as_bytes())?;
+    w.write_all(img.as_bytes())?;
     Ok(())
 }
 
@@ -1143,6 +1137,12 @@ mod tests {
             manifest_line(&bad),
             "{\"page\":2,\"status\":\"failed\",\"error\":\"degenerate page size 0x100 pt\"}\n"
         );
+    }
+
+    #[test]
+    fn pnm_header_matches_pdftoppm() {
+        assert_eq!(pnm_header(true, 100, 50), "P6\n100 50\n255\n");
+        assert_eq!(pnm_header(false, 7, 9), "P5\n7 9\n255\n");
     }
 
     #[test]

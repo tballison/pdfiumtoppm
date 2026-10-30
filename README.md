@@ -159,8 +159,8 @@ Release archives contain `pdfiumtoppm` and a matching pdfium library; keep
 them together:
 
 ```sh
-tar xzf pdfiumtoppm-v0.2.1-linux-x64.tar.gz
-sudo mv pdfiumtoppm-v0.2.1-linux-x64 /opt/pdfiumtoppm
+tar xzf pdfiumtoppm-v0.3.0-linux-x64.tar.gz
+sudo mv pdfiumtoppm-v0.3.0-linux-x64 /opt/pdfiumtoppm
 sudo ln -s /opt/pdfiumtoppm/pdfiumtoppm /usr/local/bin/pdfiumtoppm
 ```
 
@@ -172,7 +172,7 @@ after a browser download, clear the quarantine flag before the first run, or
 Gatekeeper blocks both files:
 
 ```sh
-xattr -dr com.apple.quarantine pdfiumtoppm-v0.2.1-mac-arm64
+xattr -dr com.apple.quarantine pdfiumtoppm-v0.3.0-mac-arm64
 ```
 
 ### macOS and untrusted PDFs
@@ -191,21 +191,21 @@ release, extract it into an otherwise empty directory, and add this
 
 ```dockerfile
 FROM ubuntu:24.04
-COPY pdfiumtoppm-v0.2.1-linux-arm64 /opt/pdfiumtoppm
+COPY pdfiumtoppm-v0.3.0-linux-arm64 /opt/pdfiumtoppm
 ENTRYPOINT ["/opt/pdfiumtoppm/pdfiumtoppm"]
 ```
 
 Build and run it locally:
 
 ```sh
-docker build --platform linux/arm64 -t pdfiumtoppm:0.2.1 .
+docker build --platform linux/arm64 -t pdfiumtoppm:0.3.0 .
 mkdir -p input output
 docker run --rm --platform linux/arm64 \
   --memory=3g --memory-swap=3g --pids-limit=64 \
   --network=none --read-only --cap-drop=ALL \
   --security-opt=no-new-privileges \
   -v "$PWD/input:/input:ro" -v "$PWD/output:/output" \
-  pdfiumtoppm:0.2.1 \
+  pdfiumtoppm:0.3.0 \
   -max-memory 2048 -max-pixels 12000000 -png \
   /input/document.pdf /output/page
 ```
