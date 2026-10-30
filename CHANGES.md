@@ -20,7 +20,21 @@ limitations under the License.
 
 - `-jpeg` and `-jpegopt quality=,progressive=,optimize=`, as `pdftoppm`.
 - `-strict`: exit 99 if any page failed to render.
+- PDFium renders 24-bit BGR into a buffer that is converted in place, instead
+  of 32-bit BGRA plus two copies: peak memory per page drops from about 8 to
+  3 bytes per pixel, and conversion is faster. Output can differ by 1 in a few
+  anti-aliased pixels.
+- `-max-time <seconds>`: wall-clock limit for the run; exit 5 when hit, after
+  removing the page in progress.
+- `-manifest <path>`: one JSON line per page with status, file, size,
+  effective DPI, bytes, and time.
+- `-cropbox` is accepted; it was already the behavior.
+- `-singlefile`, and output to stdout when `<image-root>` is omitted, as
+  `pdftoppm`.
 - README states that output files are numbered by PDF page number.
+- Pages are written to `<file>.part` and renamed when complete; a crash or
+  write error no longer leaves a truncated page file. A write error in the
+  final buffer flush or PNG end chunk, previously ignored, now exits 2.
 
 ## 0.2.1
 

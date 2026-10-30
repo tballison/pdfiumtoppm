@@ -21,8 +21,8 @@ via [pdfium-render](https://crates.io/crates/pdfium-render) that speaks a
 subset of Poppler's `pdftoppm` command line. Unsupported flags are rejected,
 not ignored; `pdftoppm` remains the reference for behavior here. This project does not
 promise to track Poppler's development, and it adds a few flags `pdftoppm`
-lacks (`-max-pages`, `-max-pixels`, `-max-memory`, `-png-compress`,
-`-strict`).
+lacks (`-max-pages`, `-max-pixels`, `-max-memory`, `-max-time`,
+`-png-compress`, `-strict`).
 
 Independent project; not affiliated with Google, PDFium, pdfium-binaries, or pdfium-render.
 
@@ -36,7 +36,7 @@ edges; bug reports with a sample PDF are welcome.
 ## Options
 
 ```
-pdfiumtoppm [options] <PDF-file> <image-root>
+pdfiumtoppm [options] <PDF-file> [<image-root>]
   -f <int>            first page
   -l <int>            last page
   -r <fp>             DPI (default 150)
@@ -46,12 +46,16 @@ pdfiumtoppm [options] <PDF-file> <image-root>
   -max-memory <int>   memory limit in MiB; exit 4 if any page hits it
                       (Linux/Windows only; default 4096 or half of RAM,
                       whichever is lower; 0 = none)
+  -max-time <fp>      wall-clock limit in seconds for the whole run; exit 5
   -png                write PNG (default binary PPM/PGM)
   -png-compress <int> PNG zlib level 0-9 (default 1; pdftoppm uses 6)
   -jpeg               write JPEG
   -jpegopt <string>   quality=0-100 (default 75), progressive=y|n,
                       optimize=y|n; comma-separated
   -gray               grayscale
+  -cropbox            crop box rather than media box (always on; accepted)
+  -singlefile         write only the first page, as <image-root>.<ext>
+  -manifest <path>    write one JSON line per page (see below)
   -strict             exit 99 if any page failed to render
   -opw <string>       owner password
   -upw <string>       user password
@@ -64,14 +68,44 @@ Output: `<image-root>-<N>.<ext>`, where `N` is the PDF page number
 zero-padded to the width of the document's page count, as in `pdftoppm`:
 `-f 101 -l 200` on a 250-page PDF writes `out-101` through `out-200`, and
 `-f 3` on a 12-page PDF starts at `out-03`.
-PNGs carry a pHYs chunk and JPEGs a JFIF density with the effective DPI, as
+With `-singlefile`, only the first page of the range is written, as
+`<image-root>.<ext>`. Without `<image-root>`, images go to stdout one after
+another, as in `pdftoppm` (a root of `-` is a file prefix, not stdout). A page
+that fails is missing from the stream; use `-strict` to make that an error.
+Stdout is not atomic: a crash can leave a partial image in the stream.
+Each page is written to `<file>.part` and renamed into place when complete, so
+an output file that exists is never truncated, even after a crash or a full
+disk. PNGs carry a pHYs chunk and JPEGs a JFIF density with the effective DPI, as
 `pdftoppm`'s do; OCR
 engines size text from it (tesseract mis-segments tables without it).
 Exit codes as `pdftoppm`: 0 ok, 1 could not open PDF, 2 could not write, 99
-other (including an empty page range); plus 4, ours, when `-max-memory` was
-hit.
+other (including an empty page range); plus, ours, 4 when `-max-memory` was
+hit and 5 when `-max-time` was.
 
-`-max-pages`, `-max-pixels`, and `-max-memory` are additions for untrusted
+`-manifest <path>` writes one JSON object per line for each page attempted,
+appended and flushed as the page finishes, so a crash or `-max-time` still
+leaves every earlier record:
+
+```
+{"page":1,"status":"ok","file":"out-1.png","width":1275,"height":1650,"dpi":150.00,"downscaled":false,"bytes":10190,"ms":2}
+{"page":2,"status":"failed","ms":0,"error":"degenerate page size 0x100 pt"}
+{"page":3,"status":"timeout"}
+```
+
+`status` is `ok`, `failed`, `memory` (over `-max-memory`), or `timeout` (the
+page in progress when `-max-time` hit). `dpi` is the effective resolution after
+`-scale-to`/`-max-pixels`; `downscaled` says `-max-pixels` shrank the page.
+`file` is absent for stdout. `bytes` and the size fields appear only for `ok`;
+`ms` covers render and encode. Fields may be added; existing ones keep their
+meaning.
+
+`-max-time` bounds the whole run, from start to the last page. PDFium cannot
+abort a page mid-render, so when the limit hits the process ends at once:
+pages already written are complete, the page in progress is removed, and
+stderr names it. Unlike an external `timeout`, it works the same on Windows
+and leaves no `.part` behind.
+
+`-max-pages`, `-max-pixels`, `-max-memory`, and `-max-time` are additions for untrusted
 input. `-scale-to` matches `pdftoppm`, including enlarging; `-max-pixels`
 only ever downscales. `-max-memory` sets `RLIMIT_AS` on Linux and a Job Object
 commit limit on Windows before the pdfium library is loaded. It is not
@@ -84,14 +118,15 @@ a fatal signal (an allocation failure inside PDFium ends that way), the exit
 code is a guess: 4 when the address space was within a third of the limit,
 99 when it was well under, since a crash that far from the limit is more
 likely a PDFium bug than memory. Either way the message names the signal,
-and any output file being written at that moment may be truncated. Rust
+and a `<file>.part` for the page being written may be left behind. Rust
 prints `fatal runtime error: Rust cannot catch foreign exceptions, aborting`
 just before that message when PDFium's allocation failure surfaces as a C++
 exception; that line is expected. Without `-max-memory` no signal is caught;
 a crash is a crash. The crash-code guess is Linux-only: on Windows a page over
 the limit is still skipped with exit 4, but if PDFium itself dies mid-page the
-process exits with the OS status instead. The bitmap alone needs about 8 bytes per output pixel on top of a ~64 MiB
-baseline (a 4096x4096 render, ~130 MiB more); that is a floor, not a
+process exits with the OS status instead. The bitmap alone needs about 3 bytes
+per output pixel on top of a ~64 MiB baseline (a 4096x4096 render, ~48 MiB
+more); that is a floor, not a
 budget. Page content can demand any amount regardless of output size (a
 5 KB PDF has been seen to take 18 GB and the machine with it), so the
 default limit exists for untrusted input; raise it if a legitimate page
@@ -110,9 +145,13 @@ a one-component grayscale JPEG where `pdftoppm` writes three components, and
 than `-png` winning or a message with exit 0. JPEG is limited to 65535 pixels
 per side; a larger page fails like any other bad page.
 
-Not supported: `-cropbox`, `-x/-y/-W/-H`, `-singlefile`, `-jpegcmyk`, `-tiff`,
-`-mono`, `-aa*`, `-hide-annotations`, stdout. Pages are sized from the crop
-box (PDFium); `pdftoppm` defaults to the media box.
+Not supported: `-x/-y/-W/-H`, `-jpegcmyk`, `-tiff`, `-mono`, `-aa*`,
+`-hide-annotations`, `-sep`, PDF from stdin.
+
+Pages are always sized and rendered from the crop box (PDFium), as
+`pdftoppm -cropbox` does; `-cropbox` is accepted so `pdftoppm` command lines
+work unchanged. Without it, `pdftoppm` uses the media box, so output differs
+for pages whose crop box is smaller.
 
 ## Install
 

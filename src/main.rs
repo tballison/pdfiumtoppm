@@ -18,10 +18,13 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 #[cfg(target_os = "linux")]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 
 use image::codecs::pnm::{PnmEncoder, PnmSubtype, SampleEncoding};
 use image::{DynamicImage, ImageEncoder};
@@ -31,10 +34,11 @@ use pdfium_render::prelude::*;
 const EXIT_OPEN_PDF: i32 = 1;
 const EXIT_OPEN_OUTPUT: i32 = 2;
 const EXIT_MEMORY: i32 = 4; // ours: -max-memory was hit
+const EXIT_TIME: i32 = 5; // ours: -max-time was hit
 const EXIT_OTHER: i32 = 99;
 
 const USAGE: &str = "\
-Usage: pdfiumtoppm [options] <PDF-file> <image-root>
+Usage: pdfiumtoppm [options] <PDF-file> [<image-root>]
   -f <int>           : first page to print
   -l <int>           : last page to print
   -r <fp>            : resolution, in DPI (default is 150)
@@ -45,12 +49,16 @@ Usage: pdfiumtoppm [options] <PDF-file> <image-root>
                        Windows; unsupported elsewhere); exit 4 if hit (default:
                        4096 or half of RAM, whichever is lower; 0 disables; on
                        Linux a crash far below the limit exits 99 instead)
+  -max-time <fp>     : wall-clock limit in seconds for the whole run; exit 5 if hit
   -png               : generate a PNG file (default is PPM)
   -png-compress <int>: PNG zlib level 0-9 (default 1; pdftoppm uses 6)
   -jpeg              : generate a JPEG file
   -jpegopt <string>  : jpeg options, with format <opt1>=<val1>[,<optN>=<valN>]*
                        (quality=0-100, default 75; progressive=y|n; optimize=y|n)
   -gray              : generate a grayscale image file
+  -cropbox           : use the crop box rather than media box (always on here)
+  -singlefile        : write only the first page and do not add digits
+  -manifest <path>   : write one JSON line per page (status, file, size, dpi, bytes, ms)
   -strict            : exit 99 if any page failed to render
   -opw <string>      : owner password (for encrypted files)
   -upw <string>      : user password (for encrypted files)
@@ -61,7 +69,8 @@ Environment:
   PDFIUM_PATH        : directory containing the pdfium library
 The pdfium library (libpdfium.so / libpdfium.dylib / pdfium.dll) is searched
 in: -pdfium, $PDFIUM_PATH, the executable's directory, then the system
-library path.";
+library path.
+Without <image-root>, images are written to stdout.";
 
 struct Opts {
     first: Option<u32>,
@@ -71,6 +80,7 @@ struct Opts {
     max_pages: Option<u32>,
     max_pixels: Option<u64>,
     max_memory: Option<u64>,
+    max_time: Option<f64>,
     png: bool,
     png_compress: u8,
     jpeg: Option<JpegOpts>,
@@ -80,7 +90,9 @@ struct Opts {
     upw: Option<String>,
     pdfium_dir: Option<PathBuf>,
     pdf: PathBuf,
-    root: String,
+    manifest: Option<PathBuf>,
+    root: Option<String>, // None = stdout
+    singlefile: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -136,12 +148,15 @@ fn parse_args() -> Opts {
     let mut max_pages = None;
     let mut max_pixels = None;
     let mut max_memory = None;
+    let mut max_time = None;
     let mut png = false;
     let mut png_compress: u8 = 1;
     let mut jpeg = false;
     let mut jpegopt = None;
     let mut gray = false;
     let mut strict = false;
+    let mut singlefile = false;
+    let mut manifest = None;
     let mut opw = None;
     let mut upw = None;
     let mut pdfium_dir = None;
@@ -166,6 +181,7 @@ fn parse_args() -> Opts {
             "-max-pixels" => {
                 max_pixels = Some(num(&value(&mut args, "-max-pixels"), "-max-pixels"))
             }
+            "-max-time" => max_time = Some(num(&value(&mut args, "-max-time"), "-max-time")),
             "-max-memory" => {
                 max_memory = Some(num(&value(&mut args, "-max-memory"), "-max-memory"))
             }
@@ -177,6 +193,10 @@ fn parse_args() -> Opts {
             "-jpegopt" => jpegopt = Some(value(&mut args, "-jpegopt")),
             "-gray" => gray = true,
             "-strict" => strict = true,
+            "-singlefile" => singlefile = true,
+            "-manifest" => manifest = Some(PathBuf::from(value(&mut args, "-manifest"))),
+            // pdfium always renders the crop box
+            "-cropbox" => {}
             "-opw" => opw = Some(value(&mut args, "-opw")),
             "-upw" => upw = Some(value(&mut args, "-upw")),
             "-pdfium" => pdfium_dir = Some(PathBuf::from(value(&mut args, "-pdfium"))),
@@ -192,11 +212,14 @@ fn parse_args() -> Opts {
             _ => positional.push(a),
         }
     }
-    if positional.len() != 2 {
-        usage_err("expected <PDF-file> <image-root>");
+    if !(1..=2).contains(&positional.len()) {
+        usage_err("expected <PDF-file> [<image-root>]");
     }
     if !(dpi > 0.0 && dpi.is_finite()) {
         usage_err("-r must be a positive number");
+    }
+    if max_time.is_some_and(|t: f64| !(t > 0.0 && t.is_finite())) {
+        usage_err("-max-time must be a positive number");
     }
     if png_compress > 9 {
         usage_err("-png-compress must be 0-9");
@@ -218,7 +241,7 @@ fn parse_args() -> Opts {
             usage_err(&format!("{flag} must be positive"));
         }
     }
-    let root = positional.pop().unwrap();
+    let root = (positional.len() == 2).then(|| positional.pop().unwrap());
     let pdf = PathBuf::from(positional.pop().unwrap());
     Opts {
         first,
@@ -228,6 +251,7 @@ fn parse_args() -> Opts {
         max_pages,
         max_pixels,
         max_memory,
+        max_time,
         png,
         png_compress,
         jpeg,
@@ -237,7 +261,9 @@ fn parse_args() -> Opts {
         upw,
         pdfium_dir,
         pdf,
+        manifest,
         root,
+        singlefile,
     }
 }
 
@@ -470,8 +496,116 @@ fn limit_memory(mib: u64) {
     }
 }
 
+static CURRENT_PAGE: AtomicU32 = AtomicU32::new(0);
+static CURRENT_PART: Mutex<Option<String>> = Mutex::new(None);
+static MANIFEST: Mutex<Option<File>> = Mutex::new(None);
+
+#[derive(Default)]
+struct PageRecord<'a> {
+    page: u32,
+    status: &'a str,
+    file: Option<&'a str>,
+    // width, height, effective dpi, downscaled by -max-pixels
+    size: Option<(u32, u32, f32, bool)>,
+    bytes: Option<u64>,
+    ms: Option<u128>,
+    error: Option<&'a str>,
+}
+
+fn json_str(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+fn manifest_line(r: &PageRecord) -> String {
+    let mut o = format!("{{\"page\":{},\"status\":{}", r.page, json_str(r.status));
+    if let Some(f) = r.file {
+        o += &format!(",\"file\":{}", json_str(f));
+    }
+    if let Some((w, h, dpi, down)) = r.size {
+        o += &format!(",\"width\":{w},\"height\":{h},\"dpi\":{dpi:.2},\"downscaled\":{down}");
+    }
+    if let Some(b) = r.bytes {
+        o += &format!(",\"bytes\":{b}");
+    }
+    if let Some(ms) = r.ms {
+        o += &format!(",\"ms\":{ms}");
+    }
+    if let Some(e) = r.error {
+        o += &format!(",\"error\":{}", json_str(e));
+    }
+    o + "}\n"
+}
+
+// one write per line, so a killed run leaves only whole records
+fn record(r: &PageRecord) {
+    let mut m = MANIFEST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(f) = m.as_mut() {
+        if let Err(e) = f.write_all(manifest_line(r).as_bytes()) {
+            eprintln!("Error: could not write manifest: {e}");
+            hard_exit(EXIT_OPEN_OUTPUT);
+        }
+    }
+}
+
+// pdfium cannot abort a render, so the only way out of a stuck page is ending the process
+fn start_watchdog(secs: f64) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs_f64(secs));
+        let part = CURRENT_PART.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(p) = part.as_deref() {
+            let _ = std::fs::remove_file(p);
+        }
+        match CURRENT_PAGE.load(Ordering::SeqCst) {
+            0 => eprintln!("Error: -max-time {secs}s exceeded before rendering"),
+            pg => {
+                eprintln!("Error: -max-time {secs}s exceeded during page {pg}");
+                record(&PageRecord {
+                    page: pg,
+                    status: "timeout",
+                    ..Default::default()
+                });
+            }
+        }
+        hard_exit(EXIT_TIME);
+    });
+}
+
+// skip atexit and static destructors: pdfium is still running on the main thread
+fn hard_exit(code: i32) -> ! {
+    #[cfg(unix)]
+    // SAFETY: _exit only terminates the process
+    unsafe {
+        libc::_exit(code)
+    }
+    #[cfg(windows)]
+    // SAFETY: terminating our own process
+    unsafe {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        TerminateProcess(GetCurrentProcess(), code as u32);
+        unreachable!()
+    }
+    #[cfg(not(any(unix, windows)))]
+    exit(code)
+}
+
 fn main() {
     let mut opts = parse_args();
+    if let Some(t) = opts.max_time {
+        start_watchdog(t);
+    }
     opts.max_memory = resolve_max_memory(opts.max_memory, physical_memory());
     if let Some(m) = opts.max_memory {
         limit_memory(m); // before libpdfium is loaded, so its allocations count
@@ -519,6 +653,15 @@ fn main() {
             exit(EXIT_OTHER);
         }
     };
+    let last = if opts.singlefile && last > first {
+        eprintln!(
+            "Warning: Single file will write only the first of the {} pages.",
+            last - first + 1
+        );
+        first
+    } else {
+        last
+    };
     let ext = match (opts.png, opts.jpeg.is_some(), opts.gray) {
         (true, _, _) => "png",
         (_, true, _) => "jpg",
@@ -526,30 +669,73 @@ fn main() {
         _ => "ppm",
     };
 
+    if let Some(p) = &opts.manifest {
+        match File::create(p) {
+            Ok(f) => *MANIFEST.lock().unwrap() = Some(f),
+            Err(e) => {
+                eprintln!("Error: could not write {}: {e}", p.display());
+                exit(EXIT_OPEN_OUTPUT);
+            }
+        }
+    }
+
     // like pdftoppm: skip bad pages; nonzero exit only if nothing rendered, or -strict
     let (mut failed, mut ok, mut oom) = (0u32, 0u32, 0u32);
     for pg in first..=last {
-        let out = out_name(&opts.root, pg, n_pages, ext);
+        CURRENT_PAGE.store(pg, Ordering::SeqCst);
+        let out = opts
+            .root
+            .as_deref()
+            .map(|r| out_name(r, pg, n_pages, ext, opts.singlefile));
+        let start = Instant::now();
+        let mut rec = PageRecord {
+            page: pg,
+            file: out.as_deref(),
+            ..Default::default()
+        };
+        let mut msg = String::new();
         match render_page(&doc, pg, &opts) {
-            Ok((img, dpi)) => {
-                if let Err(e) = write_image(&img, dpi, &out, &opts) {
-                    eprintln!("Error: could not write {out}: {e}");
-                    exit(EXIT_OPEN_OUTPUT);
+            Ok((img, dpi, downscaled)) => {
+                rec.size = Some((img.width(), img.height(), dpi, downscaled));
+                match write_image(&img, dpi, out.as_deref(), &opts) {
+                    Ok(n) => {
+                        rec.status = "ok";
+                        rec.bytes = Some(n);
+                        ok += 1;
+                    }
+                    Err(e) => {
+                        msg = format!(
+                            "could not write {}: {e}",
+                            out.as_deref().unwrap_or("stdout")
+                        );
+                        eprintln!("Error: {msg}");
+                        rec.status = "failed";
+                        rec.error = Some(&msg);
+                        rec.ms = Some(start.elapsed().as_millis());
+                        record(&rec);
+                        exit(EXIT_OPEN_OUTPUT);
+                    }
                 }
-                ok += 1;
             }
             Err(PageError::Memory(need)) => {
-                eprintln!(
-                    "Error: page {pg}: needs about {} MiB, over -max-memory",
-                    need >> 20
-                );
+                msg = format!("needs about {} MiB, over -max-memory", need >> 20);
+                eprintln!("Error: page {pg}: {msg}");
+                rec.status = "memory";
                 oom += 1;
             }
             Err(PageError::Other(e)) => {
-                eprintln!("Error: page {pg}: {e}");
+                msg = e;
+                eprintln!("Error: page {pg}: {msg}");
+                rec.status = "failed";
                 failed += 1;
             }
         }
+        if rec.status != "ok" {
+            rec.file = None;
+            rec.error = Some(&msg);
+        }
+        rec.ms = Some(start.elapsed().as_millis());
+        record(&rec);
     }
     if oom > 0 {
         eprintln!("Error: {oom} page(s) skipped for -max-memory");
@@ -574,6 +760,25 @@ impl From<String> for PageError {
     }
 }
 
+// in place, dropping row padding: each output byte lands at or before its source
+fn bgr_to_rgb_or_gray(buf: &mut Vec<u8>, w: usize, h: usize, stride: usize, gray: bool) {
+    let mut o = 0;
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * stride + x * 3;
+            let (b, g, r) = (buf[i] as u32, buf[i + 1] as u32, buf[i + 2] as u32);
+            if gray {
+                buf[o] = ((r * 299 + g * 587 + b * 114) / 1000) as u8;
+                o += 1;
+            } else {
+                buf[o..o + 3].copy_from_slice(&[r as u8, g as u8, b as u8]);
+                o += 3;
+            }
+        }
+    }
+    buf.truncate(o);
+}
+
 // reserve without touching, so RLIMIT_AS is checked before pdfium allocates
 fn probe(bytes: usize) -> Result<Vec<u8>, PageError> {
     let mut v = Vec::new();
@@ -583,7 +788,10 @@ fn probe(bytes: usize) -> Result<Vec<u8>, PageError> {
 }
 
 // like pdftoppm: N is the PDF page number, zero-padded to the page count's width
-fn out_name(root: &str, pg: u32, n_pages: u32, ext: &str) -> String {
+fn out_name(root: &str, pg: u32, n_pages: u32, ext: &str, singlefile: bool) -> String {
+    if singlefile {
+        return format!("{root}.{ext}");
+    }
     let pad = n_pages.to_string().len();
     format!("{root}-{pg:0pad$}.{ext}")
 }
@@ -639,13 +847,17 @@ fn target_size(w: f32, h: f32, opts: &Opts) -> Result<(i32, i32, f32, bool), Str
 }
 
 // the image and its effective DPI
-fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<(DynamicImage, f32), PageError> {
+fn render_page(
+    doc: &PdfDocument,
+    pg: u32,
+    opts: &Opts,
+) -> Result<(DynamicImage, f32, bool), PageError> {
     let page = doc
         .pages()
         .get((pg - 1) as PdfPageIndex)
         .map_err(|e| format!("could not load: {e:?}"))?;
     let (w, h) = (page.width().value, page.height().value);
-    let (w_px, h_px, scale) = match target_size(w, h, opts) {
+    let (w_px, h_px, scale, downscaled) = match target_size(w, h, opts) {
         Ok((wp, hp, scale, downscaled)) => {
             if downscaled {
                 eprintln!(
@@ -653,7 +865,7 @@ fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<(DynamicImage,
                     opts.max_pixels.unwrap()
                 );
             }
-            (wp, hp, scale)
+            (wp, hp, scale, downscaled)
         }
         Err(e) => return Err(e.into()),
     };
@@ -664,46 +876,76 @@ fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<(DynamicImage,
         .render_form_data(true)
         .render_annotations(true)
         .use_grayscale_rendering(opts.gray);
-    let n = w_px as usize * h_px as usize;
-    let bpp = if opts.gray { 1 } else { 3 };
-    // peak is pdfium's BGRA bitmap plus its raw copy, or that copy plus our output
-    if opts.max_memory.is_some() {
-        drop(probe(n * 8)?);
-    }
-    let bgra = {
-        let bitmap = page
-            .render_with_config(&config)
+    // pdfium renders BGR into our buffer, compacted in place: one ~n*3 allocation.
+    // Not pdfium's Gray format: it anti-aliases text differently.
+    let (w, h) = (w_px as usize, h_px as usize);
+    let stride = (w * 3).div_ceil(4) * 4;
+    let mut buf = probe(stride * h)?;
+    buf.resize(buf.capacity(), 0);
+    {
+        let mut bitmap = PdfBitmap::from_bytes(w_px, h_px, PdfBitmapFormat::BGR, &mut buf)
+            .map_err(|e| format!("could not create bitmap: {e:?}"))?;
+        page.render_into_bitmap_with_config(&mut bitmap, &config)
             .map_err(|e| format!("could not render: {e:?}"))?;
-        if bitmap.format().ok() != Some(PdfBitmapFormat::BGRA) {
-            return Err("unexpected bitmap format".to_string().into());
-        }
-        bitmap.as_raw_bytes()
-    };
-    let mut out = probe(n * bpp)?;
-    for &[b, g, r, _] in bgra.as_chunks::<4>().0 {
-        let (b, g, r) = (b as u32, g as u32, r as u32);
-        if opts.gray {
-            out.push(((r * 299 + g * 587 + b * 114) / 1000) as u8);
-        } else {
-            out.extend_from_slice(&[r as u8, g as u8, b as u8]);
-        }
     }
+    bgr_to_rgb_or_gray(&mut buf, w, h, stride, opts.gray);
+    let out = buf;
     let (wu, hu) = (w_px as u32, h_px as u32);
     let img = if opts.gray {
         DynamicImage::ImageLuma8(image::GrayImage::from_raw(wu, hu, out).unwrap())
     } else {
         DynamicImage::ImageRgb8(image::RgbImage::from_raw(wu, hu, out).unwrap())
     };
-    Ok((img, scale * 72.0))
+    Ok((img, scale * 72.0, downscaled))
 }
 
+struct Counter<W>(W, u64);
+
+impl<W: Write> Write for Counter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.0.write(buf)?;
+        self.1 += n as u64;
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+// via <out>.part and rename, so a crash or full disk never leaves a truncated <out>; returns bytes written
 fn write_image(
     img: &DynamicImage,
     dpi: f32,
-    out: &str,
+    out: Option<&str>,
+    opts: &Opts,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let Some(out) = out else {
+        let mut w = BufWriter::new(Counter(std::io::stdout().lock(), 0));
+        encode(img, dpi, &mut w, opts)?;
+        return Ok(w.into_inner().map_err(|e| e.into_error())?.1);
+    };
+    let part = format!("{out}.part");
+    *CURRENT_PART.lock().unwrap() = Some(part.clone());
+    let res = (|| -> Result<u64, Box<dyn std::error::Error>> {
+        let mut w = BufWriter::new(Counter(File::create(&part)?, 0));
+        encode(img, dpi, &mut w, opts)?;
+        let n = w.into_inner().map_err(|e| e.into_error())?.1;
+        std::fs::rename(&part, out)?;
+        Ok(n)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    *CURRENT_PART.lock().unwrap() = None;
+    res
+}
+
+fn encode(
+    img: &DynamicImage,
+    dpi: f32,
+    w: impl Write,
     opts: &Opts,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let w = BufWriter::new(File::create(out)?);
     if opts.png {
         let mut enc = png::Encoder::new(w, img.width(), img.height());
         enc.set_color(if img.color().has_color() {
@@ -726,7 +968,10 @@ fn write_image(
             yppu: ppm,
             unit: png::Unit::Meter,
         }));
-        enc.write_header()?.write_image_data(img.as_bytes())?;
+        let mut wr = enc.write_header()?;
+        wr.write_image_data(img.as_bytes())?;
+        // drop would write IEND but swallow its error
+        wr.finish()?;
         return Ok(());
     }
     if let Some(j) = &opts.jpeg {
@@ -783,6 +1028,7 @@ mod tests {
             max_pages: None,
             max_pixels,
             max_memory: None,
+            max_time: None,
             png: false,
             png_compress: 1,
             jpeg: None,
@@ -792,7 +1038,9 @@ mod tests {
             upw: None,
             pdfium_dir: None,
             pdf: PathBuf::new(),
-            root: String::new(),
+            manifest: None,
+            root: None,
+            singlefile: false,
         }
     }
 
@@ -819,10 +1067,11 @@ mod tests {
 
     #[test]
     fn out_name_uses_page_number_and_page_count_width() {
-        assert_eq!(out_name("p", 3, 12, "ppm"), "p-03.ppm");
-        assert_eq!(out_name("p", 101, 250, "jpg"), "p-101.jpg");
-        assert_eq!(out_name("p", 1, 9, "png"), "p-1.png");
-        assert_eq!(out_name("p", 7, 1000, "png"), "p-0007.png");
+        assert_eq!(out_name("p", 3, 12, "ppm", false), "p-03.ppm");
+        assert_eq!(out_name("p", 101, 250, "jpg", false), "p-101.jpg");
+        assert_eq!(out_name("p", 1, 9, "png", false), "p-1.png");
+        assert_eq!(out_name("p", 7, 1000, "png", false), "p-0007.png");
+        assert_eq!(out_name("p", 7, 1000, "png", true), "p.png");
     }
 
     #[test]
@@ -852,6 +1101,48 @@ mod tests {
         ] {
             assert!(parse_jpegopt(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn bgr_converts_in_place_and_drops_padding() {
+        // 2x2 BGR, stride 8: red, blue | gray, white; 2 padding bytes per row
+        let px = [
+            0, 0, 255, 255, 0, 0, 9, 9, 128, 128, 128, 255, 255, 255, 9, 9,
+        ];
+        let mut v = px.to_vec();
+        bgr_to_rgb_or_gray(&mut v, 2, 2, 8, false);
+        assert_eq!(v, [255, 0, 0, 0, 0, 255, 128, 128, 128, 255, 255, 255]);
+        let mut v = px.to_vec();
+        bgr_to_rgb_or_gray(&mut v, 2, 2, 8, true);
+        assert_eq!(v, [76, 29, 128, 255]);
+    }
+
+    #[test]
+    fn manifest_lines_are_json() {
+        assert_eq!(json_str("a\"b\\c\n\u{1}é"), r#""a\"b\\c\n\u0001é""#);
+        let ok = PageRecord {
+            page: 3,
+            status: "ok",
+            file: Some("out-03.png"),
+            size: Some((1275, 1650, 150.0, false)),
+            bytes: Some(42),
+            ms: Some(7),
+            error: None,
+        };
+        assert_eq!(
+            manifest_line(&ok),
+            "{\"page\":3,\"status\":\"ok\",\"file\":\"out-03.png\",\"width\":1275,\"height\":1650,\"dpi\":150.00,\"downscaled\":false,\"bytes\":42,\"ms\":7}\n"
+        );
+        let bad = PageRecord {
+            page: 2,
+            status: "failed",
+            error: Some("degenerate page size 0x100 pt"),
+            ..Default::default()
+        };
+        assert_eq!(
+            manifest_line(&bad),
+            "{\"page\":2,\"status\":\"failed\",\"error\":\"degenerate page size 0x100 pt\"}\n"
+        );
     }
 
     #[test]
