@@ -18,6 +18,11 @@ export LC_ALL=C
 B=${1:-target/release/pdfiumtoppm}
 T=$(dirname "$0")
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+# absolute, so cases that cd elsewhere still find the library
+# (pwd -W: a Windows path under Git Bash, for the native exe; elsewhere it fails over)
+if [ -n "${PDFIUM_PATH:-}" ]; then
+  PDFIUM_PATH="$(cd "$PDFIUM_PATH" && { pwd -W 2>/dev/null || pwd; })"; export PDFIUM_PATH
+fi
 fail() { echo "FAIL: $*" >&2; exit 1; }
 file_size() {
   stat -c %s "$1" 2>/dev/null || stat -f %z "$1"
