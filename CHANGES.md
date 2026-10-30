@@ -20,6 +20,10 @@ limitations under the License.
 
 - `-jpeg` and `-jpegopt quality=,progressive=,optimize=`, as `pdftoppm`.
 - `-strict`: exit 99 if any page failed to render.
+- PDFium renders 24-bit BGR into a buffer that is converted in place, instead
+  of 32-bit BGRA plus two copies: peak memory per page drops from about 8 to
+  3 bytes per pixel, and conversion is faster. Output can differ by 1 in a few
+  anti-aliased pixels.
 - `-cropbox` is accepted; it was already the behavior.
 - `-singlefile`, and output to stdout when `<image-root>` is omitted, as
   `pdftoppm`.

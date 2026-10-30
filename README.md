@@ -99,8 +99,9 @@ just before that message when PDFium's allocation failure surfaces as a C++
 exception; that line is expected. Without `-max-memory` no signal is caught;
 a crash is a crash. The crash-code guess is Linux-only: on Windows a page over
 the limit is still skipped with exit 4, but if PDFium itself dies mid-page the
-process exits with the OS status instead. The bitmap alone needs about 8 bytes per output pixel on top of a ~64 MiB
-baseline (a 4096x4096 render, ~130 MiB more); that is a floor, not a
+process exits with the OS status instead. The bitmap alone needs about 3 bytes
+per output pixel on top of a ~64 MiB baseline (a 4096x4096 render, ~48 MiB
+more); that is a floor, not a
 budget. Page content can demand any amount regardless of output size (a
 5 KB PDF has been seen to take 18 GB and the machine with it), so the
 default limit exists for untrusted input; raise it if a legitimate page

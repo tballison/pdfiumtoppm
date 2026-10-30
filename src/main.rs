@@ -598,6 +598,25 @@ impl From<String> for PageError {
     }
 }
 
+// in place, dropping row padding: each output byte lands at or before its source
+fn bgr_to_rgb_or_gray(buf: &mut Vec<u8>, w: usize, h: usize, stride: usize, gray: bool) {
+    let mut o = 0;
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * stride + x * 3;
+            let (b, g, r) = (buf[i] as u32, buf[i + 1] as u32, buf[i + 2] as u32);
+            if gray {
+                buf[o] = ((r * 299 + g * 587 + b * 114) / 1000) as u8;
+                o += 1;
+            } else {
+                buf[o..o + 3].copy_from_slice(&[r as u8, g as u8, b as u8]);
+                o += 3;
+            }
+        }
+    }
+    buf.truncate(o);
+}
+
 // reserve without touching, so RLIMIT_AS is checked before pdfium allocates
 fn probe(bytes: usize) -> Result<Vec<u8>, PageError> {
     let mut v = Vec::new();
@@ -691,30 +710,20 @@ fn render_page(doc: &PdfDocument, pg: u32, opts: &Opts) -> Result<(DynamicImage,
         .render_form_data(true)
         .render_annotations(true)
         .use_grayscale_rendering(opts.gray);
-    let n = w_px as usize * h_px as usize;
-    let bpp = if opts.gray { 1 } else { 3 };
-    // peak is pdfium's BGRA bitmap plus its raw copy, or that copy plus our output
-    if opts.max_memory.is_some() {
-        drop(probe(n * 8)?);
-    }
-    let bgra = {
-        let bitmap = page
-            .render_with_config(&config)
+    // pdfium renders BGR into our buffer, compacted in place: one ~n*3 allocation.
+    // Not pdfium's Gray format: it anti-aliases text differently.
+    let (w, h) = (w_px as usize, h_px as usize);
+    let stride = (w * 3).div_ceil(4) * 4;
+    let mut buf = probe(stride * h)?;
+    buf.resize(buf.capacity(), 0);
+    {
+        let mut bitmap = PdfBitmap::from_bytes(w_px, h_px, PdfBitmapFormat::BGR, &mut buf)
+            .map_err(|e| format!("could not create bitmap: {e:?}"))?;
+        page.render_into_bitmap_with_config(&mut bitmap, &config)
             .map_err(|e| format!("could not render: {e:?}"))?;
-        if bitmap.format().ok() != Some(PdfBitmapFormat::BGRA) {
-            return Err("unexpected bitmap format".to_string().into());
-        }
-        bitmap.as_raw_bytes()
-    };
-    let mut out = probe(n * bpp)?;
-    for &[b, g, r, _] in bgra.as_chunks::<4>().0 {
-        let (b, g, r) = (b as u32, g as u32, r as u32);
-        if opts.gray {
-            out.push(((r * 299 + g * 587 + b * 114) / 1000) as u8);
-        } else {
-            out.extend_from_slice(&[r as u8, g as u8, b as u8]);
-        }
     }
+    bgr_to_rgb_or_gray(&mut buf, w, h, stride, opts.gray);
+    let out = buf;
     let (wu, hu) = (w_px as u32, h_px as u32);
     let img = if opts.gray {
         DynamicImage::ImageLuma8(image::GrayImage::from_raw(wu, hu, out).unwrap())
@@ -910,6 +919,20 @@ mod tests {
         ] {
             assert!(parse_jpegopt(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn bgr_converts_in_place_and_drops_padding() {
+        // 2x2 BGR, stride 8: red, blue | gray, white; 2 padding bytes per row
+        let px = [
+            0, 0, 255, 255, 0, 0, 9, 9, 128, 128, 128, 255, 255, 255, 9, 9,
+        ];
+        let mut v = px.to_vec();
+        bgr_to_rgb_or_gray(&mut v, 2, 2, 8, false);
+        assert_eq!(v, [255, 0, 0, 0, 0, 255, 128, 128, 128, 255, 255, 255]);
+        let mut v = px.to_vec();
+        bgr_to_rgb_or_gray(&mut v, 2, 2, 8, true);
+        assert_eq!(v, [76, 29, 128, 255]);
     }
 
     #[test]
