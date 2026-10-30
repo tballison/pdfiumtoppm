@@ -104,6 +104,20 @@ else
   "$B" -r 300 -max-memory 256 -max-pixels 4000000 "$T/huge.pdf" "$W/memp" 2>/dev/null || fail "-max-pixels should keep huge page under -max-memory"
 fi
 
+# full run takes ~0.4s locally; the limit must hit mid-run, leaving only complete pages
+"$B" -max-time 0.05 -r 1200 -png -max-memory 0 "$T/twelve.pdf" "$W/mt" 2>"$W/mt.err" && rc=0 || rc=$?
+[ "$rc" = 5 ] && grep -q "max-time 0.05s exceeded" "$W/mt.err" || fail "-max-time should exit 5 (rc $rc)"
+ls "$W"/mt-*.part >/dev/null 2>&1 && fail "-max-time should remove the page in progress"
+for f in "$W"/mt-*.png; do
+  [ -e "$f" ] || continue
+  [ "$(tail -c 8 "$f" | od -An -tx1 | tr -d ' \n')" = 49454e44ae426082 ] || fail "$f is not a complete PNG"
+done
+"$B" -max-time 60 -r 72 -f 1 -l 1 "$T/twelve.pdf" "$W/mt60" || fail "-max-time should not fire early"
+for bad in "-max-time 0" "-max-time -1" "-max-time nan" "-max-time x"; do
+  "$B" $bad "$T/twelve.pdf" "$W/x" 2>/dev/null && rc=0 || rc=$?
+  [ "$rc" = 99 ] || fail "'$bad' should exit 99 (got $rc)"
+done
+
 "$B" -r 72 "$T/degenerate.pdf" "$W/d" 2>/dev/null && rc=0 || rc=$?
 [ "$rc" = 0 ] || fail "bad page should not fail the run (exit $rc)"
 [ -f "$W/d-1.ppm" ] && [ ! -f "$W/d-2.ppm" ] && [ -f "$W/d-3.ppm" ] || fail "expected pages 1 and 3 only"

@@ -24,6 +24,8 @@ limitations under the License.
   of 32-bit BGRA plus two copies: peak memory per page drops from about 8 to
   3 bytes per pixel, and conversion is faster. Output can differ by 1 in a few
   anti-aliased pixels.
+- `-max-time <seconds>`: wall-clock limit for the run; exit 5 when hit, after
+  removing the page in progress.
 - `-cropbox` is accepted; it was already the behavior.
 - `-singlefile`, and output to stdout when `<image-root>` is omitted, as
   `pdftoppm`.

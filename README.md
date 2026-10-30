@@ -21,8 +21,8 @@ via [pdfium-render](https://crates.io/crates/pdfium-render) that speaks a
 subset of Poppler's `pdftoppm` command line. Unsupported flags are rejected,
 not ignored; `pdftoppm` remains the reference for behavior here. This project does not
 promise to track Poppler's development, and it adds a few flags `pdftoppm`
-lacks (`-max-pages`, `-max-pixels`, `-max-memory`, `-png-compress`,
-`-strict`).
+lacks (`-max-pages`, `-max-pixels`, `-max-memory`, `-max-time`,
+`-png-compress`, `-strict`).
 
 Independent project; not affiliated with Google, PDFium, pdfium-binaries, or pdfium-render.
 
@@ -46,6 +46,7 @@ pdfiumtoppm [options] <PDF-file> [<image-root>]
   -max-memory <int>   memory limit in MiB; exit 4 if any page hits it
                       (Linux/Windows only; default 4096 or half of RAM,
                       whichever is lower; 0 = none)
+  -max-time <fp>      wall-clock limit in seconds for the whole run; exit 5
   -png                write PNG (default binary PPM/PGM)
   -png-compress <int> PNG zlib level 0-9 (default 1; pdftoppm uses 6)
   -jpeg               write JPEG
@@ -77,10 +78,16 @@ disk. PNGs carry a pHYs chunk and JPEGs a JFIF density with the effective DPI, a
 `pdftoppm`'s do; OCR
 engines size text from it (tesseract mis-segments tables without it).
 Exit codes as `pdftoppm`: 0 ok, 1 could not open PDF, 2 could not write, 99
-other (including an empty page range); plus 4, ours, when `-max-memory` was
-hit.
+other (including an empty page range); plus, ours, 4 when `-max-memory` was
+hit and 5 when `-max-time` was.
 
-`-max-pages`, `-max-pixels`, and `-max-memory` are additions for untrusted
+`-max-time` bounds the whole run, from start to the last page. PDFium cannot
+abort a page mid-render, so when the limit hits the process ends at once:
+pages already written are complete, the page in progress is removed, and
+stderr names it. Unlike an external `timeout`, it works the same on Windows
+and leaves no `.part` behind.
+
+`-max-pages`, `-max-pixels`, `-max-memory`, and `-max-time` are additions for untrusted
 input. `-scale-to` matches `pdftoppm`, including enlarging; `-max-pixels`
 only ever downscales. `-max-memory` sets `RLIMIT_AS` on Linux and a Job Object
 commit limit on Windows before the pdfium library is loaded. It is not

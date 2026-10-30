@@ -18,7 +18,10 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 #[cfg(target_os = "linux")]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -31,6 +34,7 @@ use pdfium_render::prelude::*;
 const EXIT_OPEN_PDF: i32 = 1;
 const EXIT_OPEN_OUTPUT: i32 = 2;
 const EXIT_MEMORY: i32 = 4; // ours: -max-memory was hit
+const EXIT_TIME: i32 = 5; // ours: -max-time was hit
 const EXIT_OTHER: i32 = 99;
 
 const USAGE: &str = "\
@@ -45,6 +49,7 @@ Usage: pdfiumtoppm [options] <PDF-file> [<image-root>]
                        Windows; unsupported elsewhere); exit 4 if hit (default:
                        4096 or half of RAM, whichever is lower; 0 disables; on
                        Linux a crash far below the limit exits 99 instead)
+  -max-time <fp>     : wall-clock limit in seconds for the whole run; exit 5 if hit
   -png               : generate a PNG file (default is PPM)
   -png-compress <int>: PNG zlib level 0-9 (default 1; pdftoppm uses 6)
   -jpeg              : generate a JPEG file
@@ -74,6 +79,7 @@ struct Opts {
     max_pages: Option<u32>,
     max_pixels: Option<u64>,
     max_memory: Option<u64>,
+    max_time: Option<f64>,
     png: bool,
     png_compress: u8,
     jpeg: Option<JpegOpts>,
@@ -140,6 +146,7 @@ fn parse_args() -> Opts {
     let mut max_pages = None;
     let mut max_pixels = None;
     let mut max_memory = None;
+    let mut max_time = None;
     let mut png = false;
     let mut png_compress: u8 = 1;
     let mut jpeg = false;
@@ -171,6 +178,7 @@ fn parse_args() -> Opts {
             "-max-pixels" => {
                 max_pixels = Some(num(&value(&mut args, "-max-pixels"), "-max-pixels"))
             }
+            "-max-time" => max_time = Some(num(&value(&mut args, "-max-time"), "-max-time")),
             "-max-memory" => {
                 max_memory = Some(num(&value(&mut args, "-max-memory"), "-max-memory"))
             }
@@ -206,6 +214,9 @@ fn parse_args() -> Opts {
     if !(dpi > 0.0 && dpi.is_finite()) {
         usage_err("-r must be a positive number");
     }
+    if max_time.is_some_and(|t: f64| !(t > 0.0 && t.is_finite())) {
+        usage_err("-max-time must be a positive number");
+    }
     if png_compress > 9 {
         usage_err("-png-compress must be 0-9");
     }
@@ -236,6 +247,7 @@ fn parse_args() -> Opts {
         max_pages,
         max_pixels,
         max_memory,
+        max_time,
         png,
         png_compress,
         jpeg,
@@ -479,8 +491,48 @@ fn limit_memory(mib: u64) {
     }
 }
 
+static CURRENT_PAGE: AtomicU32 = AtomicU32::new(0);
+static CURRENT_PART: Mutex<Option<String>> = Mutex::new(None);
+
+// pdfium cannot abort a render, so the only way out of a stuck page is ending the process
+fn start_watchdog(secs: f64) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs_f64(secs));
+        let part = CURRENT_PART.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(p) = part.as_deref() {
+            let _ = std::fs::remove_file(p);
+        }
+        match CURRENT_PAGE.load(Ordering::SeqCst) {
+            0 => eprintln!("Error: -max-time {secs}s exceeded before rendering"),
+            pg => eprintln!("Error: -max-time {secs}s exceeded during page {pg}"),
+        }
+        hard_exit(EXIT_TIME);
+    });
+}
+
+// skip atexit and static destructors: pdfium is still running on the main thread
+fn hard_exit(code: i32) -> ! {
+    #[cfg(unix)]
+    // SAFETY: _exit only terminates the process
+    unsafe {
+        libc::_exit(code)
+    }
+    #[cfg(windows)]
+    // SAFETY: terminating our own process
+    unsafe {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        TerminateProcess(GetCurrentProcess(), code as u32);
+        unreachable!()
+    }
+    #[cfg(not(any(unix, windows)))]
+    exit(code)
+}
+
 fn main() {
     let mut opts = parse_args();
+    if let Some(t) = opts.max_time {
+        start_watchdog(t);
+    }
     opts.max_memory = resolve_max_memory(opts.max_memory, physical_memory());
     if let Some(m) = opts.max_memory {
         limit_memory(m); // before libpdfium is loaded, so its allocations count
@@ -547,6 +599,7 @@ fn main() {
     // like pdftoppm: skip bad pages; nonzero exit only if nothing rendered, or -strict
     let (mut failed, mut ok, mut oom) = (0u32, 0u32, 0u32);
     for pg in first..=last {
+        CURRENT_PAGE.store(pg, Ordering::SeqCst);
         let out = opts
             .root
             .as_deref()
@@ -747,6 +800,7 @@ fn write_image(
         return Ok(());
     };
     let part = format!("{out}.part");
+    *CURRENT_PART.lock().unwrap() = Some(part.clone());
     let res = (|| -> Result<(), Box<dyn std::error::Error>> {
         let mut w = BufWriter::new(File::create(&part)?);
         encode(img, dpi, &mut w, opts)?;
@@ -757,6 +811,7 @@ fn write_image(
     if res.is_err() {
         let _ = std::fs::remove_file(&part);
     }
+    *CURRENT_PART.lock().unwrap() = None;
     res
 }
 
@@ -848,6 +903,7 @@ mod tests {
             max_pages: None,
             max_pixels,
             max_memory: None,
+            max_time: None,
             png: false,
             png_compress: 1,
             jpeg: None,
