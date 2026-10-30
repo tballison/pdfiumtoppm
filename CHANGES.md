@@ -16,6 +16,12 @@ limitations under the License.
 
 # Changes
 
+## Unreleased
+
+- `-jpeg` and `-jpegopt quality=,progressive=,optimize=`, as `pdftoppm`.
+- `-strict`: exit 99 if any page failed to render.
+- README states that output files are numbered by PDF page number.
+
 ## 0.2.1
 
 - macOS arm64 release zip (`pdfiumtoppm` plus `libpdfium.dylib`).

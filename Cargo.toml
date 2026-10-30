@@ -25,6 +25,7 @@ repository = "https://github.com/tballison/pdfiumtoppm"
 pdfium-render = "=0.9.4"
 image = { version = "=0.25.10", default-features = false, features = ["pnm"] }
 png = "=0.18.1"
+jpeg-encoder = { version = "=0.7.1", default-features = false, features = ["std", "simd"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"

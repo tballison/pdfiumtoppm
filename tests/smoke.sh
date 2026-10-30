@@ -42,6 +42,23 @@ for bad in "-png-compress 10" "-png-compress -1" "-png-compress x"; do
   [ "$rc" = 99 ] || fail "'$bad' should exit 99 (got $rc)"
 done
 
+# JFIF density 300 dpi: units 1, 0x012c twice
+"$B" -jpeg -r 300 -f 1 -l 1 "$T/twelve.pdf" "$W/j"
+[ "$(od -An -tx1 -N 3 "$W/j-01.jpg" | tr -d ' \n')" = ffd8ff ] || fail "not a JPEG"
+od -An -tx1 -N 20 "$W/j-01.jpg" | tr -d ' \n' | grep -q '4a46494600010[12]01012c012c' || fail "JFIF should say 300 dpi"
+"$B" -jpeg -jpegopt quality=10 -r 72 "$T/tika-testPDF.pdf" "$W/jq10"
+"$B" -jpeg -jpegopt quality=95,progressive=y,optimize=y -r 72 "$T/tika-testPDF.pdf" "$W/jq95"
+[ "$(file_size "$W/jq10-1.jpg")" -lt "$(file_size "$W/jq95-1.jpg")" ] || fail "quality 10 should be smaller than 95"
+od -An -tx1 -v "$W/jq95-1.jpg" | tr -d ' \n' | grep -q ffc2 || fail "progressive=y should write SOF2"
+"$B" -jpeg -gray -r 72 "$T/redblue.pdf" "$W/jg"
+[ -f "$W/jg-1.jpg" ] || fail "expected jg-1.jpg"
+for bad in "-jpeg -png" "-jpeg -jpegopt quality=101" "-jpeg -jpegopt foo=1" "-jpeg -jpegopt progressive=maybe"; do
+  "$B" $bad "$T/twelve.pdf" "$W/x" 2>/dev/null && rc=0 || rc=$?
+  [ "$rc" = 99 ] || fail "'$bad' should exit 99 (got $rc)"
+done
+"$B" -jpegopt quality=50 -r 72 -f 1 -l 1 "$T/twelve.pdf" "$W/jo" 2>"$W/jo.err" || fail "-jpegopt without -jpeg should only warn"
+grep -q "only valid with jpeg" "$W/jo.err" && [ -f "$W/jo-01.ppm" ] || fail "-jpegopt without -jpeg should warn and write ppm"
+
 "$B" -r 72 "$T/twelve.pdf" "$W/p"
 p_pages=("$W"/p-*.ppm)
 [ "${#p_pages[@]}" = 12 ] || fail "expected 12 ppm files"
@@ -75,6 +92,10 @@ fi
 [ -f "$W/d-1.ppm" ] && [ ! -f "$W/d-2.ppm" ] && [ -f "$W/d-3.ppm" ] || fail "expected pages 1 and 3 only"
 "$B" -r 72 -f 2 -l 2 "$T/degenerate.pdf" "$W/d2" 2>/dev/null && rc=0 || rc=$?
 [ "$rc" = 99 ] || fail "range with no renderable page should exit 99 (got $rc)"
+"$B" -r 72 -strict "$T/degenerate.pdf" "$W/ds" 2>/dev/null && rc=0 || rc=$?
+[ "$rc" = 99 ] || fail "-strict with a bad page should exit 99 (got $rc)"
+[ -f "$W/ds-1.ppm" ] && [ -f "$W/ds-3.ppm" ] || fail "-strict should still render the good pages"
+"$B" -r 72 -strict -f 1 -l 1 "$T/degenerate.pdf" "$W/ds1" || fail "-strict with no bad page should exit 0"
 "$B" -r nan "$T/twelve.pdf" "$W/x" 2>/dev/null && rc=0 || rc=$?
 [ "$rc" = 99 ] || fail "-r nan should be rejected"
 for bad in "-f 20" "-f 5 -l 3" "-max-pages 0" "-scale-to 0" "-max-pixels 0" "-max-memory -1"; do

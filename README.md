@@ -21,7 +21,8 @@ via [pdfium-render](https://crates.io/crates/pdfium-render) that speaks a
 subset of Poppler's `pdftoppm` command line. Unsupported flags are rejected,
 not ignored; `pdftoppm` remains the reference for behavior here. This project does not
 promise to track Poppler's development, and it adds a few flags `pdftoppm`
-lacks (`-max-pages`, `-max-pixels`, `-max-memory`, `-png-compress`).
+lacks (`-max-pages`, `-max-pixels`, `-max-memory`, `-png-compress`,
+`-strict`).
 
 Independent project; not affiliated with Google, PDFium, pdfium-binaries, or pdfium-render.
 
@@ -47,7 +48,11 @@ pdfiumtoppm [options] <PDF-file> <image-root>
                       whichever is lower; 0 = none)
   -png                write PNG (default binary PPM/PGM)
   -png-compress <int> PNG zlib level 0-9 (default 1; pdftoppm uses 6)
+  -jpeg               write JPEG
+  -jpegopt <string>   quality=0-100 (default 75), progressive=y|n,
+                      optimize=y|n; comma-separated
   -gray               grayscale
+  -strict             exit 99 if any page failed to render
   -opw <string>       owner password
   -upw <string>       user password
   -pdfium <path>      directory containing the pdfium library
@@ -55,8 +60,12 @@ pdfiumtoppm [options] <PDF-file> <image-root>
   -h                  print usage
 ```
 
-Output: `<image-root>-<N>.<ext>`, `N` zero-padded to the page-count width.
-PNGs carry a pHYs chunk with the effective DPI, as `pdftoppm`'s do; OCR
+Output: `<image-root>-<N>.<ext>`, where `N` is the PDF page number
+zero-padded to the width of the document's page count, as in `pdftoppm`:
+`-f 101 -l 200` on a 250-page PDF writes `out-101` through `out-200`, and
+`-f 3` on a 12-page PDF starts at `out-03`.
+PNGs carry a pHYs chunk and JPEGs a JFIF density with the effective DPI, as
+`pdftoppm`'s do; OCR
 engines size text from it (tesseract mis-segments tables without it).
 Exit codes as `pdftoppm`: 0 ok, 1 could not open PDF, 2 could not write, 99
 other (including an empty page range); plus 4, ours, when `-max-memory` was
@@ -91,9 +100,17 @@ backstop is the OS: Linux's out-of-memory killer ends the process; macOS has
 no such killer and compresses and swaps until the whole system stalls.
 
 A page that fails to render is reported and skipped; exit stays 0 unless no
-page rendered (99).
+page rendered (99). With `-strict` any failed page exits 99, after the
+remaining pages are rendered.
 
-Not supported: `-cropbox`, `-x/-y/-W/-H`, `-singlefile`, `-jpeg`, `-tiff`,
+`-jpeg` matches `pdftoppm`'s `-jpeg`/`-jpegopt` (libjpeg defaults: quality 75,
+4:2:0 chroma subsampling at every quality). Differences: `-gray -jpeg` writes
+a one-component grayscale JPEG where `pdftoppm` writes three components, and
+`-jpeg` with `-png` or an invalid `-jpegopt` is a usage error (exit 99) rather
+than `-png` winning or a message with exit 0. JPEG is limited to 65535 pixels
+per side; a larger page fails like any other bad page.
+
+Not supported: `-cropbox`, `-x/-y/-W/-H`, `-singlefile`, `-jpegcmyk`, `-tiff`,
 `-mono`, `-aa*`, `-hide-annotations`, stdout. Pages are sized from the crop
 box (PDFium); `pdftoppm` defaults to the media box.
 
@@ -226,8 +243,11 @@ Chromium. Alastair Carey's
 [pdfium-render](https://github.com/ajrcarey/pdfium-render) makes it usable
 from Rust, and Benoit Blanchon's
 [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) makes it
-installable. The [`image`](https://github.com/image-rs/image) crate does the
-encoding. And [Poppler](https://poppler.freedesktop.org/)'s `pdftoppm` set the
+installable. The [`image`](https://github.com/image-rs/image),
+[`png`](https://github.com/image-rs/image-png), and
+[`jpeg-encoder`](https://github.com/vstroebel/jpeg-encoder) crates do the
+encoding; this software is based in part on the work of the Independent JPEG
+Group. And [Poppler](https://poppler.freedesktop.org/)'s `pdftoppm` set the
 interface and behavior this tool imitates; it has served as the workhorse of
 countless pipelines for two decades and is the yardstick used throughout this
 README. Thank you to all of them.

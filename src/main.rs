@@ -47,7 +47,11 @@ Usage: pdfiumtoppm [options] <PDF-file> <image-root>
                        Linux a crash far below the limit exits 99 instead)
   -png               : generate a PNG file (default is PPM)
   -png-compress <int>: PNG zlib level 0-9 (default 1; pdftoppm uses 6)
+  -jpeg              : generate a JPEG file
+  -jpegopt <string>  : jpeg options, with format <opt1>=<val1>[,<optN>=<valN>]*
+                       (quality=0-100, default 75; progressive=y|n; optimize=y|n)
   -gray              : generate a grayscale image file
+  -strict            : exit 99 if any page failed to render
   -opw <string>      : owner password (for encrypted files)
   -upw <string>      : user password (for encrypted files)
   -pdfium <path>     : directory containing the pdfium library
@@ -69,12 +73,53 @@ struct Opts {
     max_memory: Option<u64>,
     png: bool,
     png_compress: u8,
+    jpeg: Option<JpegOpts>,
     gray: bool,
+    strict: bool,
     opw: Option<String>,
     upw: Option<String>,
     pdfium_dir: Option<PathBuf>,
     pdf: PathBuf,
     root: String,
+}
+
+#[derive(Debug, PartialEq)]
+struct JpegOpts {
+    quality: u8,
+    progressive: bool,
+    optimize: bool,
+}
+
+// pdftoppm's -jpegopt syntax and defaults
+fn parse_jpegopt(s: &str) -> Result<JpegOpts, String> {
+    let mut o = JpegOpts {
+        quality: 75,
+        progressive: false,
+        optimize: false,
+    };
+    for kv in s.split(',').filter(|kv| !kv.is_empty()) {
+        let (k, v) = kv
+            .split_once('=')
+            .ok_or_else(|| format!("bad jpeg option \"{kv}\""))?;
+        let yn = |v: &str| match v {
+            "y" => Ok(true),
+            "n" => Ok(false),
+            _ => Err(format!("jpeg {k} option must be \"y\" or \"n\"")),
+        };
+        match k {
+            "quality" => {
+                o.quality = v
+                    .parse()
+                    .ok()
+                    .filter(|q| *q <= 100)
+                    .ok_or("jpeg quality must be between 0 and 100")?
+            }
+            "progressive" => o.progressive = yn(v)?,
+            "optimize" => o.optimize = yn(v)?,
+            _ => return Err(format!("unknown jpeg option \"{k}\"")),
+        }
+    }
+    Ok(o)
 }
 
 fn usage_err(msg: &str) -> ! {
@@ -93,7 +138,10 @@ fn parse_args() -> Opts {
     let mut max_memory = None;
     let mut png = false;
     let mut png_compress: u8 = 1;
+    let mut jpeg = false;
+    let mut jpegopt = None;
     let mut gray = false;
+    let mut strict = false;
     let mut opw = None;
     let mut upw = None;
     let mut pdfium_dir = None;
@@ -125,7 +173,10 @@ fn parse_args() -> Opts {
             "-png-compress" => {
                 png_compress = num(&value(&mut args, "-png-compress"), "-png-compress")
             }
+            "-jpeg" => jpeg = true,
+            "-jpegopt" => jpegopt = Some(value(&mut args, "-jpegopt")),
             "-gray" => gray = true,
+            "-strict" => strict = true,
             "-opw" => opw = Some(value(&mut args, "-opw")),
             "-upw" => upw = Some(value(&mut args, "-upw")),
             "-pdfium" => pdfium_dir = Some(PathBuf::from(value(&mut args, "-pdfium"))),
@@ -150,6 +201,14 @@ fn parse_args() -> Opts {
     if png_compress > 9 {
         usage_err("-png-compress must be 0-9");
     }
+    if png && jpeg {
+        usage_err("-png and -jpeg are exclusive");
+    }
+    if jpegopt.is_some() && !jpeg {
+        eprintln!("Warning: -jpegopt only valid with jpeg output.");
+    }
+    let jpeg = jpeg
+        .then(|| parse_jpegopt(jpegopt.as_deref().unwrap_or("")).unwrap_or_else(|e| usage_err(&e)));
     for (flag, zero) in [
         ("-scale-to", scale_to == Some(0)),
         ("-max-pages", max_pages == Some(0)),
@@ -171,7 +230,9 @@ fn parse_args() -> Opts {
         max_memory,
         png,
         png_compress,
+        jpeg,
         gray,
+        strict,
         opw,
         upw,
         pdfium_dir,
@@ -458,17 +519,17 @@ fn main() {
             exit(EXIT_OTHER);
         }
     };
-    let pad = n_pages.to_string().len();
-    let ext = match (opts.png, opts.gray) {
-        (true, _) => "png",
-        (false, true) => "pgm",
-        (false, false) => "ppm",
+    let ext = match (opts.png, opts.jpeg.is_some(), opts.gray) {
+        (true, _, _) => "png",
+        (_, true, _) => "jpg",
+        (_, _, true) => "pgm",
+        _ => "ppm",
     };
 
-    // like pdftoppm: skip bad pages; nonzero exit only if nothing rendered
+    // like pdftoppm: skip bad pages; nonzero exit only if nothing rendered, or -strict
     let (mut failed, mut ok, mut oom) = (0u32, 0u32, 0u32);
     for pg in first..=last {
-        let out = format!("{}-{:0pad$}.{ext}", opts.root, pg);
+        let out = out_name(&opts.root, pg, n_pages, ext);
         match render_page(&doc, pg, &opts) {
             Ok((img, dpi)) => {
                 if let Err(e) = write_image(&img, dpi, &out, &opts) {
@@ -496,7 +557,7 @@ fn main() {
     }
     if failed > 0 {
         eprintln!("Error: {failed} page(s) failed to render");
-        if ok == 0 {
+        if ok == 0 || opts.strict {
             exit(EXIT_OTHER);
         }
     }
@@ -519,6 +580,12 @@ fn probe(bytes: usize) -> Result<Vec<u8>, PageError> {
     v.try_reserve_exact(bytes)
         .map_err(|_| PageError::Memory(bytes))?;
     Ok(v)
+}
+
+// like pdftoppm: N is the PDF page number, zero-padded to the page count's width
+fn out_name(root: &str, pg: u32, n_pages: u32, ext: &str) -> String {
+    let pad = n_pages.to_string().len();
+    format!("{root}-{pg:0pad$}.{ext}")
 }
 
 // clamp like pdftoppm: -f below 1 is 1, -l past the end is the end
@@ -662,6 +729,32 @@ fn write_image(
         enc.write_header()?.write_image_data(img.as_bytes())?;
         return Ok(());
     }
+    if let Some(j) = &opts.jpeg {
+        let (Ok(wu), Ok(hu)) = (u16::try_from(img.width()), u16::try_from(img.height())) else {
+            return Err(format!(
+                "{}x{} exceeds JPEG's 65535 limit",
+                img.width(),
+                img.height()
+            )
+            .into());
+        };
+        // libjpeg clamps quality 0 to 1
+        let mut enc = jpeg_encoder::Encoder::new(w, j.quality.max(1));
+        // 4:2:0 at every quality, as libjpeg (pdftoppm) does
+        enc.set_sampling_factor(jpeg_encoder::SamplingFactor::F_2_2);
+        enc.set_progressive(j.progressive);
+        enc.set_optimized_huffman_tables(j.optimize);
+        enc.set_density(jpeg_encoder::PixelDensity::dpi(
+            dpi.round().clamp(1.0, 65535.0) as u16,
+        ));
+        let color = if img.color().has_color() {
+            jpeg_encoder::ColorType::Rgb
+        } else {
+            jpeg_encoder::ColorType::Luma
+        };
+        enc.encode(img.as_bytes(), wu, hu, color)?;
+        return Ok(());
+    }
     // binary P6/P5 like pdftoppm; image's default is PAM (P7)
     let subtype = if img.color().has_color() {
         PnmSubtype::Pixmap(SampleEncoding::Binary)
@@ -692,7 +785,9 @@ mod tests {
             max_memory: None,
             png: false,
             png_compress: 1,
+            jpeg: None,
             gray: false,
+            strict: false,
             opw: None,
             upw: None,
             pdfium_dir: None,
@@ -720,6 +815,43 @@ mod tests {
         assert_eq!(page_range(12, Some(20), None, None), Err((20, 12)));
         assert_eq!(page_range(12, Some(5), Some(3), None), Err((5, 3)));
         assert_eq!(page_range(0, None, None, None), Err((1, 0)));
+    }
+
+    #[test]
+    fn out_name_uses_page_number_and_page_count_width() {
+        assert_eq!(out_name("p", 3, 12, "ppm"), "p-03.ppm");
+        assert_eq!(out_name("p", 101, 250, "jpg"), "p-101.jpg");
+        assert_eq!(out_name("p", 1, 9, "png"), "p-1.png");
+        assert_eq!(out_name("p", 7, 1000, "png"), "p-0007.png");
+    }
+
+    #[test]
+    fn jpegopt_parses_like_pdftoppm() {
+        let d = JpegOpts {
+            quality: 75,
+            progressive: false,
+            optimize: false,
+        };
+        assert_eq!(parse_jpegopt(""), Ok(d));
+        assert_eq!(
+            parse_jpegopt("quality=90,progressive=y,optimize=y"),
+            Ok(JpegOpts {
+                quality: 90,
+                progressive: true,
+                optimize: true
+            })
+        );
+        assert_eq!(parse_jpegopt("quality=0").unwrap().quality, 0);
+        for bad in [
+            "quality=101",
+            "quality=x",
+            "quality=-1",
+            "foo=1",
+            "progressive=maybe",
+            "quality",
+        ] {
+            assert!(parse_jpegopt(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
